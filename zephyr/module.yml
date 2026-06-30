@@ -1,0 +1,5 @@
+name: pigeon
+build:
+  cmake: CMakeLists.txt
+  kconfig: zephyr/Kconfig
+

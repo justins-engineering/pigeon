@@ -1,0 +1,34 @@
+menuconfig PIGEON
+  bool "Pigeon Client Platform Library"
+  default n
+  help
+    Enable the client-side modeling and synchronization logic
+    for linking physical assets to the PidgeIoT edge core.
+
+if PIGEON
+
+choice PIGEON_CONNECTOR_TYPE
+  prompt "Default Network Serialization Connector"
+  default PIGEON_CONNECTOR_COAP
+
+config PIGEON_CONNECTOR_COAP
+  bool "CoAP over NIDD/Cellular"
+  help
+    Serialize device shadow deltas into minimal byte blocks optimized for
+    constrained cellular paths.
+
+config PIGEON_CONNECTOR_HTTPS
+  bool "HTTPS REST API"
+  help
+    Standard TLS socket interface for line-powered gateways.
+
+endchoice
+
+config PIGEON_LOG_LEVEL
+  int "Pigeon Library Log Level"
+  default 3
+  range 0 4
+  help
+    0: None, 1: Error, 2: Warning, 3: Info, 4: Debug
+
+endif # PIGEON

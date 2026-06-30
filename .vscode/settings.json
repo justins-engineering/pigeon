@@ -1,0 +1,26 @@
+{
+  "files.associations": {
+    "log-*.txt": "ansi",
+    "*.conf": "kconfig"
+  },
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/.git/objects/**": true,
+    "**/node_modules/**": true,
+    "./bootloader/**": true
+  },
+  "search.exclude": {
+    "**/build": true
+  },
+  "python.defaultInterpreterPath": "${workspaceRoot}/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "modificationsIfAvailable",
+  "kconfig.zephyr.base": "${zephyrBase}",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/app",
+    "--completion-style=detailed",
+    "--header-insertion=never",
+    "--malloc-trim"
+  ]
+}
