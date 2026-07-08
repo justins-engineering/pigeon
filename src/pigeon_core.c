@@ -11,11 +11,30 @@ int pigeon_init(const struct pigeon_config *config) {
 
   LOG_INF("Initializing Pigeon tracking instance: %s", config->device_id);
 
-  #if defined(CONFIG_PIGEON_CONNECTOR_COAP)
-      LOG_INF("Transport mapped to low-overhead CoAP edge pipeline");
-  #elif defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
-      LOG_INF("Transport mapped to secure HTTPS edge pipeline");
-  #endif
+  switch (config->connector.type) {
+    case PIGEON_CONNECTOR_HTTPS:
+      if (!config->connector.cfg.https.endpoint || !config->connector.cfg.https.token) {
+        LOG_ERR("HTTPS connector requires endpoint and token");
+        return -EINVAL;
+      }
+      LOG_INF(
+          "Transport mapped to secure HTTPS edge pipeline: %s", config->connector.cfg.https.endpoint
+      );
+      break;
+    case PIGEON_CONNECTOR_COAP:
+      if (!config->connector.cfg.coap.endpoint || !config->connector.cfg.coap.token) {
+        LOG_ERR("CoAP connector requires endpoint and token");
+        return -EINVAL;
+      }
+      LOG_INF(
+          "Transport mapped to low-overhead CoAP edge pipeline: %s",
+          config->connector.cfg.coap.endpoint
+      );
+      break;
+    default:
+      LOG_ERR("Unknown connector type: %d", config->connector.type);
+      return -EINVAL;
+  }
 
   return 0;
 }

@@ -1,0 +1,9 @@
+# Compiler: arm-zephyr-eabi
+CompileFlags:
+  Add: -Wno-unknown-warning-option
+  Remove:
+    - -fno-reorder-functions
+    - --param*
+    - -fno-printf-return-value
+    - -mfp16-format=ieee
+    - -fno-freestanding

@@ -24,11 +24,14 @@ config PIGEON_CONNECTOR_HTTPS
 
 endchoice
 
+endif # PIGEON
+
+# Not nested under "if PIGEON": pigeon_core.c (which reads this) is compiled
+# unconditionally by CMakeLists.txt regardless of CONFIG_PIGEON, so this must
+# always have a value.
 config PIGEON_LOG_LEVEL
   int "Pigeon Library Log Level"
   default 3
   range 0 4
   help
     0: None, 1: Error, 2: Warning, 3: Info, 4: Debug
-
-endif # PIGEON

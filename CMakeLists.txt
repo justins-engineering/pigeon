@@ -6,7 +6,10 @@ endif()
 zephyr_library_named(pigeon)
 
 # Public include directory path allows users to simply call #include <pigeon.h>
-zephyr_library_include_directories(include)
+# Must be zephyr_include_directories (global/INTERFACE), not the _library_
+# variant, which only adds PRIVATE to this library's own sources — consumers
+# like an app's main.c would still fail to find the header otherwise.
+zephyr_include_directories(include)
 
 # Bind the underlying core implementation sources
 zephyr_library_sources(src/pigeon_core.c)
