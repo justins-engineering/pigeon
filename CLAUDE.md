@@ -23,7 +23,7 @@ This is a Zephyr **module**, not a standalone buildable app — `CMakeLists.txt`
 
 - `zephyr/module.yml` wires the module into a Zephyr manifest (`west.yml`) via `build.cmake`/`build.kconfig`.
 - `zephyr/Kconfig` exposes `CONFIG_PIGEON` (menuconfig gate), a mutually-exclusive choice between `CONFIG_PIGEON_CONNECTOR_COAP` and `CONFIG_PIGEON_CONNECTOR_HTTPS`, and `CONFIG_PIGEON_LOG_LEVEL` (0-4).
-- `.vscode/settings.json` expects clangd compile commands at `build/app/compile_commands.json` — i.e. developed against a sibling Zephyr app whose build directory is `build/app`.
+- `.vscode/settings.json` expects clangd compile commands at `build/https_init/compile_commands.json` — a symlink at `build` points to `~/pigeon-examples/build`, the shared build dir of the `https_init` sample in the sibling `pigeon-examples` repo (`samples/https_init`), which pulls this module in via `ZEPHYR_EXTRA_MODULES`.
 
 ## Conventions
 

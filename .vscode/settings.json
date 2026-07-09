@@ -18,7 +18,7 @@
   "editor.formatOnSaveMode": "modificationsIfAvailable",
   "kconfig.zephyr.base": "${zephyrBase}",
   "clangd.arguments": [
-    "--compile-commands-dir=${workspaceFolder}/build/app",
+    "--compile-commands-dir=${workspaceFolder}/build/https_init",
     "--query-driver=${env:HOME}/.local/zephyr-sdk-1.0.1/arm-zephyr-eabi/bin/*",
     "--completion-style=detailed",
     "--header-insertion=never",
