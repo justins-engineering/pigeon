@@ -26,9 +26,30 @@ endchoice
 
 endif # PIGEON
 
-# Not nested under "if PIGEON": pigeon_core.c (which reads this) is compiled
-# unconditionally by CMakeLists.txt regardless of CONFIG_PIGEON, so this must
-# always have a value.
+# Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled
+# unconditionally by CMakeLists.txt regardless of CONFIG_PIGEON, so they must
+# always have a value (an unsatisfied "if PIGEON" dependency would otherwise
+# drop the CONFIG_PIGEON_* macro from autoconf.h entirely).
+config PIGEON_ENDPOINT
+  string "Pigeon Backend Endpoint"
+  help
+    URL of the PidgeIoT edge endpoint this device connects to: an
+    https:// REST URL for CONFIG_PIGEON_CONNECTOR_HTTPS, or a
+    coaps+tcp:// (RFC 8323 CoAP-over-TLS/TCP) host for
+    CONFIG_PIGEON_CONNECTOR_COAP, since this device stack has no UDP
+    support yet. Mirrors dovecote's build_http_endpoint output for HTTPS
+    (e.g. https://api.pidgeiot.com/device/pigeons/<device_id>); the CoAP
+    backend endpoint is still coaps:// (UDP/DTLS) as of this writing, so
+    the coaps+tcp:// scheme here is ahead of what dovecote serves today.
+
+config PIGEON_TOKEN
+  string "Pigeon Device Auth Token"
+  help
+    Bearer-prefixed, Ed25519-signed device JWT issued by the backend
+    (see dovecote's require_device_auth). Returned once at provisioning;
+    override this per build (e.g. via a board/app Kconfig fragment) rather
+    than committing a real token here.
+
 config PIGEON_LOG_LEVEL
   int "Pigeon Library Log Level"
   default 3

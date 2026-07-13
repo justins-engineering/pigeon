@@ -17,27 +17,31 @@ enum pigeon_connector_type {
   PIGEON_CONNECTOR_COAP
 };
 
-/* Mirrors capsules::HttpsConfig. */
-struct pigeon_https_config {
-  const char *endpoint;
-  const char *token; /* JWT, Bearer-prefixed when sent; returned once by the backend */
-};
+/*
+ * Mirrors capsules::HttpsConfig/CoapConfig's endpoint+token fields, sourced
+ * from CONFIG_PIGEON_ENDPOINT/CONFIG_PIGEON_TOKEN instead of runtime struct
+ * fields: PIGEON_CONNECTOR_TYPE is already a build-time choice (only one of
+ * pigeon_coap.c/pigeon_https.c is compiled in), so there is never more than
+ * one live endpoint/token pair to configure.
+ */
 
-/* Mirrors capsules::CoapConfig. PSK fields are NULL when absent (Option<String>::None). */
+/*
+ * No on-device UDP support yet, so this connector speaks CoAP over TLS/TCP
+ * (RFC 8323 coaps+tcp://) instead of the usual CoAP-over-DTLS/UDP. These
+ * fields are ahead of the backend: capsules::CoapConfig still names them
+ * dtls_psk_identity/dtls_psk_secret (coaps:// over UDP) as of this writing —
+ * update this comment once dovecote/capsules gain coaps+tcp:// support and
+ * rename their fields to match. NULL when absent (Option<String>::None).
+ */
 struct pigeon_coap_config {
-  const char *endpoint;
-  const char *token;
-  const char *dtls_psk_identity;
-  const char *dtls_psk_secret;
+  const char *tls_psk_identity;
+  const char *tls_psk_secret;
 };
 
 /* Mirrors capsules::Connector (tagged union: Https(HttpsConfig) | Coap(CoapConfig)). */
 struct pigeon_connector {
   enum pigeon_connector_type type;
-  union {
-    struct pigeon_https_config https;
-    struct pigeon_coap_config coap;
-  } cfg;
+  struct pigeon_coap_config coap; /* only consulted when type == PIGEON_CONNECTOR_COAP */
 };
 
 struct pigeon_config {

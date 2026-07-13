@@ -27,9 +27,17 @@ with `dovecote`:
 
 - `struct pigeon_config` — `device_id` (also the JWT audience) plus a
   `struct pigeon_connector`.
-- `struct pigeon_connector` — tagged union of `struct pigeon_https_config`
-  (`endpoint`, `token`) or `struct pigeon_coap_config` (adds
-  `dtls_psk_identity`/`dtls_psk_secret`).
+- `struct pigeon_connector` — a `type` (`PIGEON_CONNECTOR_HTTPS` /
+  `PIGEON_CONNECTOR_COAP`) plus `struct pigeon_coap_config`
+  (`tls_psk_identity`/`tls_psk_secret`, only consulted for the CoAP
+  connector). `endpoint`/`token` aren't struct fields — they're build-time
+  `CONFIG_PIGEON_ENDPOINT`/`CONFIG_PIGEON_TOKEN` Kconfig strings, since the
+  connector type is already a build-time choice (see Kconfig below).
+  **Note:** the CoAP connector speaks CoAP-over-TLS/TCP (RFC 8323
+  `coaps+tcp://`), not the usual CoAP-over-DTLS/UDP, since this device stack
+  has no UDP support yet — this is ahead of `dovecote`, which still only
+  serves `coaps://` (UDP/DTLS). See `CLAUDE.md`'s "Known wire-compat gap"
+  note before assuming the two sides can talk to each other.
 - `struct pigeon_shadow_doc` — `target_version`/`current_version` counters
   plus raw JSON `target_config`/`current_config` text, as returned by
   `GET /pigeon/shadow/get`.
@@ -57,6 +65,9 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
   gated behind it.
 - `CONFIG_PIGEON_CONNECTOR_COAP` / `CONFIG_PIGEON_CONNECTOR_HTTPS` —
   mutually exclusive choice, only relevant once a transport is implemented.
+- `CONFIG_PIGEON_ENDPOINT` / `CONFIG_PIGEON_TOKEN` — the backend URL and
+  device JWT, required whenever `pigeon_init()` is called (checked
+  unconditionally, regardless of `CONFIG_PIGEON`).
 - `CONFIG_PIGEON_LOG_LEVEL` — 0 (none) to 4 (debug), default 3.
 
 ## License
