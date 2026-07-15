@@ -19,10 +19,26 @@ config PIGEON_CONNECTOR_COAP
 
 config PIGEON_CONNECTOR_HTTPS
   bool "HTTPS REST API"
+  select HTTP_CLIENT
+  select JSON_LIBRARY
   help
     Standard TLS socket interface for line-powered gateways.
 
 endchoice
+
+if PIGEON_CONNECTOR_HTTPS
+
+config PIGEON_HTTPS_SEC_TAG
+  int "TLS sec_tag for the Pigeon HTTPS connector"
+  default 1
+  help
+    Security tag under which the CA cert for CONFIG_PIGEON_ENDPOINT is
+    provisioned (via modem_key_mgmt on nRF91 offloaded sockets, or
+    tls_credential_add elsewhere). Must match whatever the application
+    provisioned its cert(s) under -- this library does not provision
+    anything itself, only opens sockets against this tag.
+
+endif # PIGEON_CONNECTOR_HTTPS
 
 endif # PIGEON
 
@@ -45,8 +61,12 @@ config PIGEON_ENDPOINT
 config PIGEON_TOKEN
   string "Pigeon Device Auth Token"
   help
-    Bearer-prefixed, Ed25519-signed device JWT issued by the backend
-    (see dovecote's require_device_auth). Returned once at provisioning;
+    The opaque per-pigeon bearer credential issued by the backend (see
+    dovecote's mint_device_credential/get_shadow_device -- a compact binary
+    token verified against this pigeon's own stored public key, not a JWT),
+    with no "Bearer " prefix -- the HTTPS connector adds that itself when
+    building the Authorization header. Returned once at provisioning (or
+    re-minted, invalidating the previous token, via a token/refresh call);
     override this per build (e.g. via a board/app Kconfig fragment) rather
     than committing a real token here.
 

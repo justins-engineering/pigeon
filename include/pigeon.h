@@ -85,6 +85,25 @@ int pigeon_init(const struct pigeon_config *config);
  */
 int pigeon_set_shadow_param(const char *key, const char *val);
 
+/**
+ * @brief Fetch the current shadow document from the platform.
+ *
+ * Issues GET <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with
+ * CONFIG_PIGEON_TOKEN). There is currently no device-facing endpoint to push
+ * current_config/current_version back to the platform (dovecote only offers
+ * that via the user-facing dashboard API), so this only reads the target the
+ * platform has set; applying target_config is the caller's job (this library
+ * does not parse it, see pigeon_shadow_doc).
+ *
+ * target_config/current_config point into a static buffer owned by this
+ * function: valid only until the next call, and only for the connector type
+ * actually compiled in (pigeon_https.c or pigeon_coap.c).
+ *
+ * @param out Filled with the fetched shadow on success.
+ * @return 0 on success, negative error code on transport/parse failure.
+ */
+int pigeon_shadow_get(struct pigeon_shadow_doc *out);
+
 #ifdef __cplusplus
 }
 #endif
