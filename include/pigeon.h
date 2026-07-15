@@ -86,6 +86,22 @@ int pigeon_init(const struct pigeon_config *config);
 int pigeon_set_shadow_param(const char *key, const char *val);
 
 /**
+ * @brief Flush the most recently queued pigeon_set_shadow_param() value to the platform.
+ *
+ * dovecote does not yet expose a device-authenticated endpoint to report
+ * current_config/current_version back (see pigeon_shadow_get()'s docs) --
+ * this sends a best-effort request against <CONFIG_PIGEON_ENDPOINT>/shadow
+ * using the same device bearer token as pigeon_shadow_get(), so it will
+ * presently fail against the real backend until that endpoint lands. The
+ * client-side plumbing is in place so nothing else needs to change once it
+ * does. On failure the pending value is kept queued for the next flush.
+ *
+ * @return 0 on success, -ENODATA if nothing is queued, negative error code
+ * on transport failure (expected for now, see above).
+ */
+int pigeon_shadow_flush(void);
+
+/**
  * @brief Fetch the current shadow document from the platform.
  *
  * Issues GET <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with

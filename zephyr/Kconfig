@@ -13,9 +13,13 @@ choice PIGEON_CONNECTOR_TYPE
 
 config PIGEON_CONNECTOR_COAP
   bool "CoAP over NIDD/Cellular"
+  select COAP
+  select JSON_LIBRARY
   help
     Serialize device shadow deltas into minimal byte blocks optimized for
-    constrained cellular paths.
+    constrained cellular paths. Speaks CoAP-over-TLS/TCP (RFC 8323,
+    coaps+tcp://) rather than the usual CoAP-over-DTLS/UDP -- this device
+    stack has no UDP support yet, see pigeon_coap_config in pigeon.h.
 
 config PIGEON_CONNECTOR_HTTPS
   bool "HTTPS REST API"
@@ -25,6 +29,22 @@ config PIGEON_CONNECTOR_HTTPS
     Standard TLS socket interface for line-powered gateways.
 
 endchoice
+
+if PIGEON_CONNECTOR_COAP
+
+config PIGEON_COAP_SEC_TAG
+  int "TLS sec_tag for the Pigeon CoAP connector"
+  default 1
+  help
+    Security tag under which credentials for CONFIG_PIGEON_ENDPOINT are
+    provisioned: PSK identity/secret (tls_credential_add, registered
+    automatically by this library from pigeon_coap_config when the app
+    supplies them via pigeon_init()) or, if the app didn't supply PSK
+    fields, a CA cert the app provisioned itself -- same model as
+    CONFIG_PIGEON_HTTPS_SEC_TAG. Must match whatever the application
+    provisioned under this tag.
+
+endif # PIGEON_CONNECTOR_COAP
 
 if PIGEON_CONNECTOR_HTTPS
 
