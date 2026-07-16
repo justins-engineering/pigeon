@@ -263,13 +263,15 @@ static int pigeon_coap_recv_exact(int sock, uint8_t *buf, size_t len) {
 }
 
 /* Uri-Path has no single "/a/b" option like HTTP (RFC 7252 sec 6.4) -- one
- * option per path segment, in order. Appends a final "shadow" segment,
- * mirroring pigeon_https.c's "<path>/shadow".
+ * option per path segment, in order. Appends a final leaf segment ("shadow"
+ * or "telemetry"), mirroring pigeon_https.c's "<path>/<leaf>".
  *
  * Splits path by hand (rather than strtok_r) since strtok_r isn't visible
  * under this project's -std=c17 build without libc-specific feature-test
  * macros -- confirmed by an actual build failure on native_sim's host libc. */
-static int pigeon_coap_append_uri_path(struct coap_packet *cpkt, const char *path) {
+static int pigeon_coap_append_uri_path(
+    struct coap_packet *cpkt, const char *path, const char *leaf
+) {
   char path_copy[PIGEON_COAP_PATH_MAX];
 
   strncpy(path_copy, path, sizeof(path_copy) - 1);
@@ -309,23 +311,22 @@ static int pigeon_coap_append_uri_path(struct coap_packet *cpkt, const char *pat
     p++;
   }
 
-  return coap_packet_append_option(cpkt, COAP_OPTION_URI_PATH, (const uint8_t *)"shadow", 6);
+  return coap_packet_append_option(cpkt, COAP_OPTION_URI_PATH, (const uint8_t *)leaf, strlen(leaf));
 }
 
 /* Builds an RFC 8323 CoAP-over-TLS/TCP request frame into buf. Uri-Path is
- * always pigeon_coap_path + "/shadow"; the device bearer token rides in a
+ * pigeon_coap_path + "/<leaf>"; the device bearer token rides in a
  * Uri-Query option (CoAP has no header mechanism to mirror pigeon_https.c's
- * "Authorization: Bearer" -- see pigeon_internal.h, this shape is a
- * placeholder pending backend CoAP support, since dovecote has no CoAP
- * listener at all yet).
+ * "Authorization: Bearer" -- this shape is a placeholder pending backend
+ * CoAP support, since dovecote has no CoAP listener at all yet).
  *
  * Returns (via out_start/out_len) a pointer into buf and length ready to
  * send as-is -- the length header is written right-aligned into the
  * PIGEON_COAP_HDR_MAX-byte reserve immediately before the fixed Code/Token
  * position, so nothing needs to be shifted once the final size is known. */
 static int pigeon_coap_build_request(
-    uint8_t *buf, size_t buf_len, uint8_t code, const uint8_t *payload, size_t payload_len,
-    uint8_t **out_start, size_t *out_len
+    uint8_t *buf, size_t buf_len, uint8_t code, const char *leaf, const uint8_t *payload,
+    size_t payload_len, uint8_t **out_start, size_t *out_len
 ) {
   if (buf_len < PIGEON_COAP_PRE_OPTS) {
     return -ENOSPC;
@@ -343,7 +344,7 @@ static int pigeon_coap_build_request(
       .hdr_len = PIGEON_COAP_PRE_OPTS,
   };
 
-  int err = pigeon_coap_append_uri_path(&cpkt, pigeon_coap_path);
+  int err = pigeon_coap_append_uri_path(&cpkt, pigeon_coap_path, leaf);
 
   if (err) {
     return err;
@@ -560,7 +561,7 @@ static int pigeon_coap_find_payload(
 }
 
 static int pigeon_coap_exchange(
-    uint8_t code, const uint8_t *payload, size_t payload_len, uint8_t *rsp_code
+    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len, uint8_t *rsp_code
 ) {
   int err = pigeon_coap_parse_endpoint();
 
@@ -578,8 +579,9 @@ static int pigeon_coap_exchange(
   uint8_t *req_start;
   size_t req_len;
 
-  err = pigeon_coap_build_request(req_buf, sizeof(req_buf), code, payload, payload_len, &req_start,
-                                   &req_len);
+  err = pigeon_coap_build_request(
+      req_buf, sizeof(req_buf), code, leaf, payload, payload_len, &req_start, &req_len
+  );
   if (err) {
     zsock_close(sock);
     return err;
@@ -609,7 +611,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   }
 
   uint8_t rsp_code;
-  int err = pigeon_coap_exchange(COAP_METHOD_GET, NULL, 0, &rsp_code);
+  int err = pigeon_coap_exchange(COAP_METHOD_GET, "shadow", NULL, 0, &rsp_code);
 
   if (err) {
     return err;
@@ -693,16 +695,46 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
   snprintk(body, sizeof(body), "{\"%s\":\"%s\"}", key_esc, val_esc);
 
   uint8_t rsp_code;
-  int err =
-      pigeon_coap_exchange(COAP_METHOD_POST, (const uint8_t *)body, strlen(body), &rsp_code);
+  int err = pigeon_coap_exchange(
+      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, strlen(body), &rsp_code
+  );
 
   if (err) {
     return err;
   }
 
-  /* dovecote has no device-facing report-back route yet (see
-   * pigeon_shadow_flush() in pigeon.h) -- a 4.04/4.05 here is expected until
-   * that lands, not a bug in this client. */
+  /* dovecote's telemetry route exists over HTTPS (report_telemetry_device),
+   * but it still has no CoAP listener at all -- until one exists this can
+   * only fail at connect(), never reach a real 2.xx. */
+  if ((rsp_code >> 5) != 2) {
+    LOG_ERR("Telemetry report POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+    return -EIO;
+  }
+
+  return 0;
+}
+
+int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+  /* current_config is embedded verbatim as a raw JSON object -- not
+   * quote-escaped, trusted to already be valid JSON (the caller's
+   * responsibility; see the matching note in pigeon_https.c). The margin
+   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). */
+  char body[PIGEON_COAP_CONFIG_MAX + 64];
+
+  snprintk(
+      body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,
+      current_version
+  );
+
+  uint8_t rsp_code;
+  int err = pigeon_coap_exchange(
+      COAP_METHOD_POST, "shadow", (const uint8_t *)body, strlen(body), &rsp_code
+  );
+
+  if (err) {
+    return err;
+  }
+
   if ((rsp_code >> 5) != 2) {
     LOG_ERR("Shadow report POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
     return -EIO;

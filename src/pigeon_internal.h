@@ -14,12 +14,9 @@ const struct pigeon_coap_config *pigeon_active_coap_config(void);
 /*
  * Implemented by whichever transport module is compiled in (pigeon_https.c
  * or pigeon_coap.c -- see CMakeLists.txt's zephyr_library_sources_ifdef, only
- * one is ever built). Sends a single shadow key/val to the platform.
- *
- * dovecote has no device-authenticated endpoint for this yet (see
- * pigeon_shadow_flush() in pigeon.h) -- implementations should still attempt
- * the network call so the client-side plumbing is ready the moment that
- * endpoint exists, rather than stubbing this out too.
+ * one is ever built). Sends a single telemetry key/val to the platform:
+ * POST <endpoint>/telemetry, body {"key": "val"}, matching dovecote's
+ * report_telemetry_device (see pigeon_shadow_flush() in pigeon.h).
  */
 int pigeon_transport_report_shadow(const char *key, const char *val);
 

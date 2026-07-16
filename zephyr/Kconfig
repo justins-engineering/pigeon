@@ -74,9 +74,9 @@ config PIGEON_ENDPOINT
     coaps+tcp:// (RFC 8323 CoAP-over-TLS/TCP) host for
     CONFIG_PIGEON_CONNECTOR_COAP, since this device stack has no UDP
     support yet. Mirrors dovecote's build_http_endpoint output for HTTPS
-    (e.g. https://api.pidgeiot.com/device/pigeons/<device_id>); the CoAP
-    backend endpoint is still coaps:// (UDP/DTLS) as of this writing, so
-    the coaps+tcp:// scheme here is ahead of what dovecote serves today.
+    (e.g. https://api.pidgeiot.com/device/pigeons/<device_id>) and
+    build_coap_endpoint's coaps+tcp:// output for CoAP -- though dovecote
+    has no actual CoAP listener yet, only the endpoint string.
 
 config PIGEON_TOKEN
   string "Pigeon Device Auth Token"

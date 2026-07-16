@@ -295,9 +295,9 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
     return sock;
   }
 
-  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/shadow")];
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/telemetry")];
 
-  snprintk(url, sizeof(url), "%s/shadow", pigeon_https_path);
+  snprintk(url, sizeof(url), "%s/telemetry", pigeon_https_path);
 
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
@@ -337,15 +337,83 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
   zsock_close(sock);
 
   if (err < 0) {
+    LOG_ERR("Telemetry report POST request failed: %d", err);
+    return err;
+  }
+
+  uint16_t status = req.internal.response.http_status_code;
+
+  if (status < 200 || status >= 300) {
+    LOG_ERR(
+        "Telemetry report POST returned HTTP %u %s", status, req.internal.response.http_status
+    );
+    return -EIO;
+  }
+
+  return 0;
+}
+
+int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+  int err = pigeon_https_parse_endpoint();
+
+  if (err) {
+    return err;
+  }
+
+  int sock = pigeon_https_connect();
+
+  if (sock < 0) {
+    return sock;
+  }
+
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/shadow")];
+
+  snprintk(url, sizeof(url), "%s/shadow", pigeon_https_path);
+
+  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
+
+  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  const char *headers[] = {auth_header, NULL};
+
+  /* current_config is embedded verbatim as a raw JSON object -- unlike
+   * pigeon_transport_report_shadow()'s key/val, this is not a string value
+   * so it must not be quote-escaped, only trusted to already be valid JSON
+   * (the caller's responsibility, see pigeon_shadow_doc's docs). The margin
+   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). */
+  char body[PIGEON_HTTPS_CONFIG_MAX + 64];
+
+  snprintk(
+      body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,
+      current_version
+  );
+
+  pigeon_https_body_len = 0;
+  pigeon_https_body[0] = '\0';
+
+  struct http_request req = {
+      .method = HTTP_POST,
+      .url = url,
+      .host = pigeon_https_host,
+      .protocol = "HTTP/1.1",
+      .header_fields = headers,
+      .content_type_value = "application/json",
+      .payload = body,
+      .payload_len = strlen(body),
+      .response = pigeon_https_response_cb,
+      .recv_buf = pigeon_https_recv_buf,
+      .recv_buf_len = sizeof(pigeon_https_recv_buf),
+  };
+
+  err = http_client_req(sock, &req, 10000, NULL);
+  zsock_close(sock);
+
+  if (err < 0) {
     LOG_ERR("Shadow report POST request failed: %d", err);
     return err;
   }
 
   uint16_t status = req.internal.response.http_status_code;
 
-  /* dovecote has no device-facing report-back route yet (see
-   * pigeon_shadow_flush() in pigeon.h) -- a 404/405 here is expected until
-   * that lands, not a bug in this client. */
   if (status < 200 || status >= 300) {
     LOG_ERR(
         "Shadow report POST returned HTTP %u %s", status, req.internal.response.http_status

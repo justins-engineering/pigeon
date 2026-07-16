@@ -27,11 +27,11 @@ enum pigeon_connector_type {
 
 /*
  * No on-device UDP support yet, so this connector speaks CoAP over TLS/TCP
- * (RFC 8323 coaps+tcp://) instead of the usual CoAP-over-DTLS/UDP. These
- * fields are ahead of the backend: capsules::CoapConfig still names them
- * dtls_psk_identity/dtls_psk_secret (coaps:// over UDP) as of this writing —
- * update this comment once dovecote/capsules gain coaps+tcp:// support and
- * rename their fields to match. NULL when absent (Option<String>::None).
+ * (RFC 8323 coaps+tcp://) instead of the usual CoAP-over-DTLS/UDP. Matches
+ * capsules::CoapConfig's tls_psk_identity/tls_psk_secret and dovecote's
+ * coaps+tcp:// endpoints as of 2026-07-15 — though dovecote still has no
+ * actual CoAP listener, so this transport has nothing to talk to yet.
+ * NULL when absent (Option<String>::None).
  */
 struct pigeon_coap_config {
   const char *tls_psk_identity;
@@ -45,7 +45,7 @@ struct pigeon_connector {
 };
 
 struct pigeon_config {
-  const char *device_id; /* Durable Object / pigeon ID; also the JWT audience */
+  const char *device_id; /* Durable Object / pigeon ID */
   struct pigeon_connector connector;
 };
 
@@ -88,16 +88,15 @@ int pigeon_set_shadow_param(const char *key, const char *val);
 /**
  * @brief Flush the most recently queued pigeon_set_shadow_param() value to the platform.
  *
- * dovecote does not yet expose a device-authenticated endpoint to report
- * current_config/current_version back (see pigeon_shadow_get()'s docs) --
- * this sends a best-effort request against <CONFIG_PIGEON_ENDPOINT>/shadow
- * using the same device bearer token as pigeon_shadow_get(), so it will
- * presently fail against the real backend until that endpoint lands. The
- * client-side plumbing is in place so nothing else needs to change once it
- * does. On failure the pending value is kept queued for the next flush.
+ * Issues POST <CONFIG_PIGEON_ENDPOINT>/telemetry, body {"key": "val"}
+ * (device-authenticated with CONFIG_PIGEON_TOKEN) -- a flat single key/value
+ * report, matching dovecote's report_telemetry_device (latest-value-per-key
+ * store, not a time-series log). Not the same endpoint as
+ * pigeon_shadow_report(), which acks shadow config, not arbitrary metrics.
+ * On failure the pending value is kept queued for the next flush.
  *
  * @return 0 on success, -ENODATA if nothing is queued, negative error code
- * on transport failure (expected for now, see above).
+ * on transport/auth failure.
  */
 int pigeon_shadow_flush(void);
 
@@ -105,11 +104,9 @@ int pigeon_shadow_flush(void);
  * @brief Fetch the current shadow document from the platform.
  *
  * Issues GET <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with
- * CONFIG_PIGEON_TOKEN). There is currently no device-facing endpoint to push
- * current_config/current_version back to the platform (dovecote only offers
- * that via the user-facing dashboard API), so this only reads the target the
- * platform has set; applying target_config is the caller's job (this library
- * does not parse it, see pigeon_shadow_doc).
+ * CONFIG_PIGEON_TOKEN). Applying target_config is the caller's job (this
+ * library does not parse it, see pigeon_shadow_doc); call pigeon_shadow_report()
+ * afterwards to confirm what was applied.
  *
  * target_config/current_config point into a static buffer owned by this
  * function: valid only until the next call, and only for the connector type
@@ -119,6 +116,25 @@ int pigeon_shadow_flush(void);
  * @return 0 on success, negative error code on transport/parse failure.
  */
 int pigeon_shadow_get(struct pigeon_shadow_doc *out);
+
+/**
+ * @brief Report back the shadow config the device has actually applied.
+ *
+ * Issues POST <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with
+ * CONFIG_PIGEON_TOKEN), body {"current_config": <current_config, raw JSON>,
+ * "current_version": current_version} -- mirrors capsules::
+ * PigeonShadowReportRequest / dovecote's report_shadow_device. Call this
+ * after applying a target_config fetched via pigeon_shadow_get(), passing
+ * the target_version you just applied as current_version (see
+ * pigeon_shadow_doc's docs on why the platform doesn't just re-derive this
+ * from target_version itself). current_config is a caller-owned raw JSON
+ * object string, not parsed or validated by this library.
+ *
+ * @param current_version The target_version that was just applied.
+ * @param current_config Raw JSON object string describing the applied config.
+ * @return 0 on success, negative error code on transport/auth failure.
+ */
+int pigeon_shadow_report(int32_t current_version, const char *current_config);
 
 #ifdef __cplusplus
 }
