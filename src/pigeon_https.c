@@ -353,6 +353,71 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
   return 0;
 }
 
+int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
+  if (!data || !len) {
+    return -EINVAL;
+  }
+
+  int err = pigeon_https_parse_endpoint();
+
+  if (err) {
+    return err;
+  }
+
+  int sock = pigeon_https_connect();
+
+  if (sock < 0) {
+    return sock;
+  }
+
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/logs")];
+
+  snprintk(url, sizeof(url), "%s/logs", pigeon_https_path);
+
+  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
+
+  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  const char *headers[] = {auth_header, NULL};
+
+  pigeon_https_body_len = 0;
+  pigeon_https_body[0] = '\0';
+
+  /* Raw dictionary-mode binary chunk, not JSON -- unlike the telemetry/shadow
+   * POSTs above, the payload here is whatever pigeon_log_backend.c drained
+   * from its ring buffer verbatim (source strings already stripped from the
+   * firmware image at build time; nothing left to encode as JSON). */
+  struct http_request req = {
+      .method = HTTP_POST,
+      .url = url,
+      .host = pigeon_https_host,
+      .protocol = "HTTP/1.1",
+      .header_fields = headers,
+      .content_type_value = "application/octet-stream",
+      .payload = (const char *)data,
+      .payload_len = len,
+      .response = pigeon_https_response_cb,
+      .recv_buf = pigeon_https_recv_buf,
+      .recv_buf_len = sizeof(pigeon_https_recv_buf),
+  };
+
+  err = http_client_req(sock, &req, 10000, NULL);
+  zsock_close(sock);
+
+  if (err < 0) {
+    LOG_ERR("Log upload POST request failed: %d", err);
+    return err;
+  }
+
+  uint16_t status = req.internal.response.http_status_code;
+
+  if (status < 200 || status >= 300) {
+    LOG_ERR("Log upload POST returned HTTP %u %s", status, req.internal.response.http_status);
+    return -EIO;
+  }
+
+  return 0;
+}
+
 int pigeon_shadow_report(int32_t current_version, const char *current_config) {
   int err = pigeon_https_parse_endpoint();
 

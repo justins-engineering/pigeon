@@ -60,6 +60,57 @@ config PIGEON_HTTPS_SEC_TAG
 
 endif # PIGEON_CONNECTOR_HTTPS
 
+config PIGEON_LOG_UPLOAD
+  bool "Remote log upload (Zephyr dictionary-based logging)"
+  default n
+  depends on PIGEON_CONNECTOR_HTTPS
+  select LOG_DICTIONARY_SUPPORT
+  help
+    Capture this device's log output via Zephyr's dictionary-based
+    logging (CONFIG_LOG_DICTIONARY_SUPPORT -- format strings are
+    stripped from the firmware image and never sent over the air,
+    only a source id, level, timestamp, and packed arguments per
+    record, which is the low-data win) into a bounded ring buffer,
+    and flush it in batches as a raw binary POST to
+    <CONFIG_PIGEON_ENDPOINT>/logs, device-authenticated the same way
+    as the telemetry/shadow reports in pigeon_https.c. Off by
+    default -- existing samples build unchanged, and enabling it
+    changes the build's log_dictionary.json requirement for decoding
+    (see pigeon-examples' README for the host-side decode flow).
+    HTTPS connector only; the CoAP connector has no equivalent
+    transport for this yet.
+
+if PIGEON_LOG_UPLOAD
+
+config PIGEON_LOG_UPLOAD_BUF_SIZE
+  int "Pigeon log upload ring buffer size (bytes)"
+  default 2048
+  help
+    Bounded ring buffer holding dictionary-mode log records not yet
+    uploaded. Once full, newly produced records are dropped rather
+    than blocking the caller or growing without bound -- see
+    pigeon_log_backend.c.
+
+config PIGEON_LOG_UPLOAD_BATCH_SIZE
+  int "Pigeon log upload batch flush threshold (bytes)"
+  default 512
+  range 1 PIGEON_LOG_UPLOAD_BUF_SIZE
+  help
+    Once this many bytes have accumulated in the ring buffer, a
+    flush is triggered immediately rather than waiting for the
+    max-interval timeout below.
+
+config PIGEON_LOG_UPLOAD_MAX_INTERVAL_MS
+  int "Pigeon log upload max flush interval (ms)"
+  default 60000
+  help
+    Upper bound on how long a partially-filled batch waits before
+    being flushed anyway, so low log-volume devices still ship
+    records instead of holding them indefinitely below the
+    batch-size threshold above.
+
+endif # PIGEON_LOG_UPLOAD
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled
