@@ -43,27 +43,36 @@ static bool pigeon_coap_psk_registered;
 static uint8_t pigeon_coap_body[PIGEON_COAP_MSG_MAX];
 static size_t pigeon_coap_body_len;
 
-/* Backing storage for pigeon_shadow_doc's target_config/current_config,
- * which pigeon.h documents as valid "until the next call." */
-static char pigeon_coap_target_config[PIGEON_COAP_CONFIG_MAX];
-static char pigeon_coap_current_config[PIGEON_COAP_CONFIG_MAX];
-
 /* Wire shape of the JSON payload a shadow GET returns (mirrors
  * capsules::PigeonShadow; see pigeon_shadow_doc in pigeon.h and the matching
- * copy of this in pigeon_https.c). */
+ * copy of this in pigeon_https.c). target_config/current_config are
+ * themselves JSON objects serialized as a string on the wire (e.g.
+ * "target_config":"{\"log\":true}") -- decoding them with JSON_TOK_STRING
+ * (as this used to) hands back a raw, still-escaped pointer into
+ * pigeon_coap_body: '{\"log\":true}' is not valid JSON, so the app's own
+ * json_obj_parse() on target_config always failed downstream regardless of
+ * which keys/values it held. JSON_TOK_STRING_BUF actually unescapes into a
+ * fixed-size buffer instead, so these are plain arrays (not pointers) and
+ * this whole struct is a static instance (not a local), decoded into
+ * directly -- pigeon_shadow_doc's target_config/current_config pointers
+ * (see pigeon_shadow_get() below) alias straight into it, which is what
+ * keeps them valid "until the next call" as pigeon.h documents, without a
+ * separate copy-out step. */
 struct pigeon_coap_shadow_wire {
   int32_t target_version;
   int32_t current_version;
-  const char *target_config;
-  const char *current_config;
+  char target_config[PIGEON_COAP_CONFIG_MAX];
+  char current_config[PIGEON_COAP_CONFIG_MAX];
   int64_t updated_at;
 };
+
+static struct pigeon_coap_shadow_wire pigeon_coap_shadow_wire;
 
 static const struct json_obj_descr pigeon_coap_shadow_wire_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, target_version, JSON_TOK_NUMBER),
     JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, current_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, target_config, JSON_TOK_STRING),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, current_config, JSON_TOK_STRING),
+    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, target_config, JSON_TOK_STRING_BUF),
+    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, current_config, JSON_TOK_STRING_BUF),
     JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, updated_at, JSON_TOK_INT64),
 };
 
@@ -635,10 +644,9 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
     return -ENODATA;
   }
 
-  struct pigeon_coap_shadow_wire wire = {0};
   int64_t decoded = json_obj_parse(
       (char *)payload, payload_len, pigeon_coap_shadow_wire_descr,
-      ARRAY_SIZE(pigeon_coap_shadow_wire_descr), &wire
+      ARRAY_SIZE(pigeon_coap_shadow_wire_descr), &pigeon_coap_shadow_wire
   );
 
   /* All 5 descriptor fields must decode: bits 0-4 set (0x1F). */
@@ -647,19 +655,11 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
     return decoded < 0 ? (int)decoded : -EBADMSG;
   }
 
-  strncpy(pigeon_coap_target_config, wire.target_config, sizeof(pigeon_coap_target_config) - 1);
-  pigeon_coap_target_config[sizeof(pigeon_coap_target_config) - 1] = '\0';
-
-  strncpy(
-      pigeon_coap_current_config, wire.current_config, sizeof(pigeon_coap_current_config) - 1
-  );
-  pigeon_coap_current_config[sizeof(pigeon_coap_current_config) - 1] = '\0';
-
-  out->target_version = wire.target_version;
-  out->current_version = wire.current_version;
-  out->target_config = pigeon_coap_target_config;
-  out->current_config = pigeon_coap_current_config;
-  out->updated_at = wire.updated_at;
+  out->target_version = pigeon_coap_shadow_wire.target_version;
+  out->current_version = pigeon_coap_shadow_wire.current_version;
+  out->target_config = pigeon_coap_shadow_wire.target_config;
+  out->current_config = pigeon_coap_shadow_wire.current_config;
+  out->updated_at = pigeon_coap_shadow_wire.updated_at;
 
   return 0;
 }
