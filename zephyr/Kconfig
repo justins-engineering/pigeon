@@ -111,6 +111,70 @@ config PIGEON_LOG_UPLOAD_MAX_INTERVAL_MS
 
 endif # PIGEON_LOG_UPLOAD
 
+config PIGEON_FOTA
+  bool "Firmware-over-the-air (FOTA) updates via MCUboot"
+  default n
+  depends on PIGEON_CONNECTOR_HTTPS
+  depends on BOOTLOADER_MCUBOOT
+  depends on IMG_MANAGER
+  select DFU_TARGET
+  select DFU_TARGET_MCUBOOT
+  select PSA_CRYPTO
+  select PSA_WANT_ALG_SHA_256
+  help
+    Chunked HTTP Range-GET download of the firmware image named in the
+    shadow's target_config "firmware" key (see capsules/dovecote's
+    shadow-driven FOTA route) straight into MCUboot's secondary slot
+    via Zephyr's dfu_target/flash_img as it streams -- the image
+    (up to ~1-2MB) is never held whole in RAM. Verifies the downloaded
+    byte count and a streamed sha256 against the shadow-declared
+    size/sha256 before scheduling a one-time test-swap
+    (dfu_target_schedule_update, equivalent to
+    boot_request_upgrade(BOOT_UPGRADE_TEST)). Does not reboot itself --
+    the caller must gracefully tear down its own connectivity (e.g.
+    lte_lc_power_off()/lte_disconnect()) and call sys_reboot() once
+    pigeon_fota_apply() returns 0, same convention as the existing
+    shadow "reboot": true command. Off by default -- existing samples
+    build unchanged, and this can only be turned on for an application
+    already built under sysbuild with MCUboot (CONFIG_BOOTLOADER_MCUBOOT,
+    CONFIG_IMG_MANAGER -- see https_init's sysbuild.conf). HTTPS
+    connector only; the CoAP connector has no download transport for
+    this yet.
+
+    MCUboot's own image signature check is the security boundary for
+    firmware authenticity here (this library's sha256 check is only an
+    integrity check against transport/flash corruption, not a
+    signature) -- production deployments must sign with a real key, not
+    NCS's dev key.
+
+if PIGEON_FOTA
+
+config PIGEON_FOTA_CHUNK_SIZE
+  int "FOTA download chunk size (bytes)"
+  default 2048
+  help
+    Size of each Range-GET request issued against
+    <CONFIG_PIGEON_ENDPOINT>/firmware, and of the matching static
+    receive/staging buffers this allocates. Each chunk is written
+    straight to flash as it arrives (see pigeon_fota_apply() in
+    pigeon_fota.c) -- the full image is never buffered whole in RAM,
+    only this window of it.
+
+config PIGEON_FOTA_CURRENT_VERSION
+  string "Currently running firmware version string"
+  help
+    Compared byte-for-byte against the shadow target_config's
+    firmware.version field (see pigeon_fota_update_available()) to
+    decide whether a FOTA download is needed. This library does not
+    read MCUboot's own embedded image version -- it trusts this
+    build-time string, so bump it deliberately alongside whatever
+    version string the corresponding image gets tagged with on the
+    platform side (ideally from the same release pipeline), or the
+    device will either loop re-downloading its own already-running
+    image or never converge.
+
+endif # PIGEON_FOTA
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled

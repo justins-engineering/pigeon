@@ -13,8 +13,14 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 #define PIGEON_HTTPS_HOST_MAX 128
 #define PIGEON_HTTPS_PATH_MAX 128
-#define PIGEON_HTTPS_RECV_BUF_LEN 640
-#define PIGEON_HTTPS_CONFIG_MAX 256
+/* Bumped from 640/256 (both with headroom to spare) when the shadow's
+ * target_config/current_config picked up the "firmware" key (see
+ * CONFIG_PIGEON_FOTA, pigeon.h's pigeon_fota_info): a version string +
+ * size + 64-char sha256 hex adds roughly 120-140 raw bytes per config on
+ * top of whatever app-level keys (log/telemetry_interval/reboot) were
+ * already there. */
+#define PIGEON_HTTPS_RECV_BUF_LEN 768
+#define PIGEON_HTTPS_CONFIG_MAX 320
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
 
 /* Parsed once (lazily, on first use) from CONFIG_PIGEON_ENDPOINT, e.g.
@@ -488,3 +494,135 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 
   return 0;
 }
+
+#if defined(CONFIG_PIGEON_FOTA)
+
+/* Streaming window for the socket/HTTP-parser's own internal read buffer --
+ * independent of CONFIG_PIGEON_FOTA_CHUNK_SIZE, since Zephyr's http_client
+ * re-invokes the response callback (below) as many times as needed per
+ * request rather than requiring recv_buf to hold a full chunk at once (see
+ * struct http_response's doc comment in zephyr/net/http/client.h). */
+#define PIGEON_HTTPS_FOTA_RECV_BUF_LEN 1024
+
+static uint8_t pigeon_https_fota_recv_buf[PIGEON_HTTPS_FOTA_RECV_BUF_LEN];
+
+/* Copies response body fragments straight into the caller's chunk buffer
+ * (user_data), unlike pigeon_https_response_cb() above which accumulates
+ * into the module-global pigeon_https_body -- that buffer is far too small
+ * for a multi-KB firmware chunk, and reusing it here would race the
+ * shadow/telemetry paths' use of the same static storage. */
+struct pigeon_https_fota_ctx {
+  uint8_t *dst;
+  size_t dst_len;
+  size_t written;
+};
+
+static int pigeon_https_fota_response_cb(
+    struct http_response *rsp, enum http_final_call final_data, void *user_data
+) {
+  ARG_UNUSED(final_data);
+  struct pigeon_https_fota_ctx *ctx = user_data;
+
+  if (rsp->body_frag_start && rsp->body_frag_len && ctx->written < ctx->dst_len) {
+    size_t copy_len = rsp->body_frag_len;
+    size_t remaining = ctx->dst_len - ctx->written;
+
+    if (copy_len > remaining) {
+      copy_len = remaining;
+    }
+
+    memcpy(ctx->dst + ctx->written, rsp->body_frag_start, copy_len);
+    ctx->written += copy_len;
+  }
+
+  return 0;
+}
+
+int pigeon_transport_download_firmware(
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+) {
+  if (!buf || !buf_len || !out_len || !out_total) {
+    return -EINVAL;
+  }
+
+  int err = pigeon_https_parse_endpoint();
+
+  if (err) {
+    return err;
+  }
+
+  int sock = pigeon_https_connect();
+
+  if (sock < 0) {
+    return sock;
+  }
+
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/firmware")];
+
+  snprintk(url, sizeof(url), "%s/firmware", pigeon_https_path);
+
+  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
+
+  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+
+  /* Inclusive end byte, per RFC 7233 -- buf_len is always > 0 here (see the
+   * guard above), so offset + buf_len - 1 never underflows. */
+  char range_header[64];
+
+  snprintk(
+      range_header, sizeof(range_header), "Range: bytes=%u-%u\r\n", (unsigned)offset,
+      (unsigned)(offset + buf_len - 1)
+  );
+
+  const char *headers[] = {auth_header, range_header, NULL};
+
+  struct pigeon_https_fota_ctx ctx = {.dst = buf, .dst_len = buf_len, .written = 0};
+
+  struct http_request req = {
+      .method = HTTP_GET,
+      .url = url,
+      .host = pigeon_https_host,
+      .protocol = "HTTP/1.1",
+      .header_fields = headers,
+      .response = pigeon_https_fota_response_cb,
+      .recv_buf = pigeon_https_fota_recv_buf,
+      .recv_buf_len = sizeof(pigeon_https_fota_recv_buf),
+  };
+
+  /* Longer timeout than the control-plane requests above: this is a
+   * multi-KB binary body over a cellular link, not a small JSON reply. */
+  err = http_client_req(sock, &req, 30000, &ctx);
+  zsock_close(sock);
+
+  if (err < 0) {
+    LOG_ERR("Firmware chunk GET failed at offset %u: %d", (unsigned)offset, err);
+    return err;
+  }
+
+  uint16_t status = req.internal.response.http_status_code;
+
+  /* Accept 200 too: a server that ignores Range and returns the whole
+   * image on the very first (offset=0) request is still usable, just
+   * inefficient -- pigeon_fota_apply()'s loop only advances by what
+   * *out_len actually reports either way. */
+  if (status != 206 && status != 200) {
+    LOG_ERR(
+        "Firmware chunk GET returned HTTP %u %s", status, req.internal.response.http_status
+    );
+    return -EIO;
+  }
+
+  if (ctx.written == 0) {
+    LOG_ERR("Firmware chunk GET returned an empty body");
+    return -ENODATA;
+  }
+
+  *out_len = ctx.written;
+  *out_total = req.internal.response.cr_present
+                   ? (size_t)req.internal.response.content_range.total
+                   : 0;
+
+  return 0;
+}
+
+#endif /* CONFIG_PIGEON_FOTA */

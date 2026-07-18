@@ -1,6 +1,7 @@
 #ifndef PIDGEIOT_PIGEON_H_
 #define PIDGEIOT_PIGEON_H_
 
+#include <stdbool.h>
 #include <zephyr/types.h>
 
 #ifdef __cplusplus
@@ -135,6 +136,83 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
  * @return 0 on success, negative error code on transport/auth failure.
  */
 int pigeon_shadow_report(int32_t current_version, const char *current_config);
+
+#define PIGEON_FOTA_VERSION_MAX 32
+#define PIGEON_FOTA_SHA256_HEX_LEN 64
+
+/**
+ * Mirrors the "firmware" sub-object of the shadow's target_config (see
+ * capsules/dovecote's shadow-driven FOTA route, ~/pidgeiot/capsules):
+ * {"firmware": {"version": "...", "size": N, "sha256": "<64 lowercase hex
+ * chars>"}}. Like the rest of target_config, this key is opaque to
+ * pigeon_shadow_get() -- the app decodes it itself (same as
+ * log/telemetry_interval/reboot), using this struct as the JSON decode
+ * target, then hands the result to pigeon_fota_update_available()/
+ * pigeon_fota_apply() below. size uses JSON_TOK_NUMBER's int32_t width
+ * (see Zephyr's zephyr/data/json.h), not size_t -- comfortably wide enough
+ * for the ~300KB-2MB images this is meant for.
+ */
+struct pigeon_fota_info {
+  char version[PIGEON_FOTA_VERSION_MAX];
+  int32_t size;
+  char sha256[PIGEON_FOTA_SHA256_HEX_LEN + 1];
+};
+
+/**
+ * @brief Whether info describes a firmware version other than this build's.
+ *
+ * Compares info->version against CONFIG_PIGEON_FOTA_CURRENT_VERSION (a
+ * build-time string, not read from MCUboot's own image header -- see
+ * zephyr/Kconfig). Keeping that string in sync with whatever version the
+ * platform is told about at upload/release time is the caller's
+ * responsibility.
+ *
+ * Only declared when CONFIG_PIGEON_FOTA is enabled.
+ */
+bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
+
+/**
+ * @brief Download, flash, and verify the firmware image info describes.
+ *
+ * Issues chunked device-authed HTTP Range GETs (CONFIG_PIGEON_FOTA_CHUNK_SIZE
+ * bytes at a time) against <CONFIG_PIGEON_ENDPOINT>/firmware, writing each
+ * chunk straight into MCUboot's secondary slot via Zephyr's dfu_target/
+ * flash_img as it arrives -- the image is never held whole in RAM.
+ * Verifies the downloaded byte count against info->size and a streamed
+ * sha256 against info->sha256 before finalizing; on any failure
+ * (transport, size mismatch, hash mismatch, flash write) the secondary
+ * slot is left un-schedulable and the running image is untouched --
+ * MCUboot never sees a partial/corrupt image as a boot candidate.
+ *
+ * On success, schedules a one-time test-swap (equivalent to
+ * boot_request_upgrade(BOOT_UPGRADE_TEST)) and returns 0 -- it does NOT
+ * reboot. The caller must gracefully tear down its own connectivity (e.g.
+ * lte_disconnect()) and call sys_reboot() itself, exactly like the
+ * existing shadow "reboot": true convention, and should report its shadow
+ * current_config back to the platform first (via pigeon_shadow_report())
+ * so the shadow converges before the device goes offline for the swap.
+ *
+ * Not safe to call concurrently with itself, and progress is not
+ * persisted across a reboot -- a failed or interrupted call must be
+ * retried from byte 0 on the next shadow poll.
+ *
+ * @return 0 on success, negative errno on failure.
+ */
+int pigeon_fota_apply(const struct pigeon_fota_info *info);
+
+/**
+ * @brief Permanently confirm the currently running image, once healthy.
+ *
+ * Call once per boot after establishing the device is actually working
+ * (e.g. after a successful pigeon_shadow_get()) -- MCUboot will otherwise
+ * revert a test-swapped image back to the previous one on the next reset.
+ * Safe to call every boot, including on images that were never
+ * test-swapped in the first place (a no-op per boot_is_img_confirmed()).
+ *
+ * @return 0 on success (including "already confirmed"), negative errno on
+ * failure to write the confirmation.
+ */
+int pigeon_fota_confirm_boot(void);
 
 #ifdef __cplusplus
 }

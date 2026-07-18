@@ -33,4 +33,23 @@ int pigeon_transport_report_shadow(const char *key, const char *val);
  */
 int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
 
+#if defined(CONFIG_PIGEON_FOTA)
+/*
+ * Implemented only by pigeon_https.c (CONFIG_PIGEON_FOTA depends on
+ * CONFIG_PIGEON_CONNECTOR_HTTPS -- no CoAP download transport yet). Issues
+ * a device-authed HTTP Range GET against <endpoint>/firmware for
+ * [offset, offset+buf_len) and copies whatever body bytes come back into
+ * buf. *out_len is set to the number of bytes actually written to buf
+ * (may be less than buf_len, e.g. on the final chunk). *out_total is set
+ * from the response's Content-Range total field when present, 0
+ * otherwise -- callers should treat 0 as "server didn't confirm a total
+ * this response", not "total is zero". Returns 0 on success, negative
+ * errno on transport/auth/HTTP-status failure. Called only from
+ * pigeon_fota_apply() (pigeon_fota.c).
+ */
+int pigeon_transport_download_firmware(
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+);
+#endif /* CONFIG_PIGEON_FOTA */
+
 #endif /* PIDGEIOT_PIGEON_INTERNAL_H_ */
