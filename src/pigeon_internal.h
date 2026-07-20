@@ -1,6 +1,7 @@
 #ifndef PIDGEIOT_PIGEON_INTERNAL_H_
 #define PIDGEIOT_PIGEON_INTERNAL_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -90,5 +91,41 @@ int pigeon_transport_download_firmware(
  */
 int pigeon_ws_report_telemetry(const char *key, const char *val);
 #endif /* CONFIG_PIGEON_WS */
+
+#if defined(CONFIG_PIGEON_SHELL)
+/*
+ * Implemented only by pigeon_ws.c. Builds and sends
+ * {"type":"shell_output","request_id":"<id-esc>","output":"<output-esc>",
+ * "exit_code":<n>,"truncated":<bool>} over the open WS socket -- same
+ * "-ENOTCONN on a down socket" convention as pigeon_ws_report_telemetry()
+ * above, though pigeon_shell.c's caller (the dedicated shell thread) has
+ * nothing to fall back to if this fails, unlike pigeon_shadow_flush()'s
+ * HTTPS fallback -- a shell reply that can't be delivered is simply lost,
+ * same as any other WS send failure while reconnecting. `output` may be
+ * NULL (encoded as an empty string) for a reply that never got as far as
+ * capturing shell_dummy's buffer (e.g. a "device busy" or "not permitted"
+ * reply). `truncated` is OR'd with this function's own internal detection
+ * of the *escaped* output overflowing its own buffer -- see pigeon_ws.c
+ * for why that's a second, independent truncation source from
+ * pigeon_shell.c's shell_dummy-buffer-overflow check.
+ */
+int pigeon_ws_send_shell_output(
+    const char *request_id, const char *output, int exit_code, bool truncated
+);
+
+/*
+ * Implemented only by pigeon_shell.c. Called from pigeon_ws.c's inbound
+ * frame dispatch (pigeon_ws_dispatch_frame()) on a "shell_cmd" frame.
+ * Copies request_id/cmd into a fixed-size struct and hands it to the
+ * dedicated shell execution thread via a depth-1 k_msgq -- returns
+ * immediately either way, never runs shell_execute_cmd() on the caller's
+ * own thread (the WS worker thread, which must stay free to keep sending
+ * pings/handling reconnects -- see zephyr/Kconfig's CONFIG_PIGEON_SHELL
+ * help text). If the msgq is already full (a command is still executing),
+ * sends an immediate "busy" shell_output reply itself rather than queuing
+ * or silently dropping the new request.
+ */
+void pigeon_shell_handle_cmd(const char *request_id, const char *cmd);
+#endif /* CONFIG_PIGEON_SHELL */
 
 #endif /* PIDGEIOT_PIGEON_INTERNAL_H_ */

@@ -203,6 +203,39 @@ static const struct json_obj_descr pigeon_ws_frame_descr[] = {
 #define PIGEON_WS_FIELD_TYPE   BIT(0)
 #define PIGEON_WS_FIELD_SHADOW BIT(1)
 
+#if defined(CONFIG_PIGEON_SHELL)
+#define PIGEON_WS_SHELL_REQUEST_ID_MAX 64
+#define PIGEON_WS_SHELL_CMD_MAX        128
+
+/*
+ * Wire shape of an inbound shell_cmd frame's request_id/cmd (task #34).
+ * Deliberately a separate struct/descriptor from pigeon_ws_frame_wire/
+ * pigeon_ws_frame_descr above rather than folding these two fields into
+ * that generic struct -- that one stays "type + whichever domain object
+ * the type implies" (shadow_update's "shadow"), decoded with its own
+ * second, targeted json_obj_parse() pass once pigeon_ws_dispatch_frame()
+ * already knows type == "shell_cmd" from the first pass. Two passes over
+ * the same buf/len is safe: JSON_TOK_STRING_BUF unescapes in place, but a
+ * shell_cmd frame has no "shadow" object for the first pass to have
+ * touched, and re-tokenizing "type" itself a second time is idempotent
+ * (a bare constant like "shell_cmd" has nothing left to unescape).
+ */
+struct pigeon_ws_shell_cmd_wire {
+  char request_id[PIGEON_WS_SHELL_REQUEST_ID_MAX];
+  char cmd[PIGEON_WS_SHELL_CMD_MAX];
+};
+
+static struct pigeon_ws_shell_cmd_wire pigeon_ws_shell_cmd;
+
+static const struct json_obj_descr pigeon_ws_shell_cmd_descr[] = {
+    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shell_cmd_wire, request_id, JSON_TOK_STRING_BUF),
+    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shell_cmd_wire, cmd, JSON_TOK_STRING_BUF),
+};
+
+#define PIGEON_WS_SHELL_FIELD_REQUEST_ID BIT(0)
+#define PIGEON_WS_SHELL_FIELD_CMD        BIT(1)
+#endif /* CONFIG_PIGEON_SHELL */
+
 /* Splits CONFIG_PIGEON_ENDPOINT ("https://host[:port]/path...") into
  * pigeon_ws_host / pigeon_ws_path once -- byte-for-byte the same algorithm
  * as pigeon_https_parse_endpoint(), see this file's header comment for why
@@ -552,6 +585,88 @@ int pigeon_ws_report_telemetry(const char *key, const char *val) {
   return pigeon_ws_send_text(body, strlen(body), false);
 }
 
+#if defined(CONFIG_PIGEON_SHELL)
+/*
+ * Sized off CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE (Zephyr's own shell_dummy
+ * output-capture buffer, selected by CONFIG_PIGEON_SHELL -- this file
+ * doesn't own that Kconfig symbol, it just reads it) rather than a
+ * separate CONFIG_PIGEON_SHELL_-prefixed size: shell_dummy's buffer is the
+ * actual upstream limit on how much raw output pigeon_shell.c can ever
+ * hand us, so sizing off anything else would either waste static RAM
+ * (bigger than shell_dummy could ever fill) or truncate before shell_dummy
+ * itself would have. 2x, not the 6x "every byte a control character"
+ * worst case pigeon_ws_report_telemetry() above uses for arbitrary
+ * caller-supplied telemetry values -- real shell command output is
+ * overwhelmingly plain text with at most occasional newlines (2 chars
+ * each), and true 6x sizing here would push a single shell_output frame
+ * uncomfortably close to the server's 16 KiB MAX_WS_FRAME_BYTES cap once
+ * CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE is bumped past its tiny (300 byte)
+ * upstream default for real use. A command whose output is pathologically
+ * escape-heavy still can't overflow this buffer (pigeon_json_escape()
+ * only ever truncates) -- it just trips the escape_truncated check below
+ * instead, same honest signal as shell_dummy's own overflow. */
+#define PIGEON_WS_SHELL_BODY_MAX (2 * CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE + 160)
+
+static char pigeon_ws_shell_body[PIGEON_WS_SHELL_BODY_MAX];
+
+/* Only ever called from pigeon_shell.c's single dedicated shell thread
+ * (v1 is one command in flight per device, see zephyr/Kconfig), so the
+ * module-static scratch buffer above is safe without its own lock --
+ * same reasoning pigeon_ws_scratch/pigeon_ws_rx_buf already rely on for
+ * their own single-owner-thread buffers elsewhere in this file. */
+int pigeon_ws_send_shell_output(
+    const char *request_id, const char *output, int exit_code, bool truncated
+) {
+  if (!request_id) {
+    return -EINVAL;
+  }
+
+  char request_id_esc[PIGEON_WS_SHELL_REQUEST_ID_MAX * 2];
+
+  pigeon_json_escape(request_id, request_id_esc, sizeof(request_id_esc));
+
+  int prefix_len = snprintk(
+      pigeon_ws_shell_body, sizeof(pigeon_ws_shell_body),
+      "{\"type\":\"shell_output\",\"request_id\":\"%s\",\"output\":\"", request_id_esc
+  );
+
+  if (prefix_len < 0 || (size_t)prefix_len >= sizeof(pigeon_ws_shell_body)) {
+    LOG_ERR("WS: shell_output prefix build failed/overflowed (prefix_len=%d)", prefix_len);
+    return -ENOMEM;
+  }
+
+  size_t remaining = sizeof(pigeon_ws_shell_body) - (size_t)prefix_len;
+  size_t escaped_len = 0;
+
+  if (output) {
+    escaped_len = pigeon_json_escape(output, pigeon_ws_shell_body + prefix_len, remaining);
+  } else {
+    pigeon_ws_shell_body[prefix_len] = '\0';
+  }
+
+  /* Mirrors pigeon_json_escape()'s own "\u00XX needs 6 bytes" bail-out
+   * margin (pigeon_core.c) -- if the escaped output landed within that
+   * margin of remaining, it plausibly hit its own truncation point on the
+   * last byte it could fit, same heuristic spirit as shell_dummy's own
+   * "len == buffer size - 1" truncation signal pigeon_shell.c checks. */
+  bool escape_truncated = output && remaining > 7 && escaped_len >= remaining - 7;
+
+  size_t suffix_offset = (size_t)prefix_len + escaped_len;
+  int suffix_len = snprintk(
+      pigeon_ws_shell_body + suffix_offset, sizeof(pigeon_ws_shell_body) - suffix_offset,
+      "\",\"exit_code\":%d,\"truncated\":%s}", exit_code,
+      (truncated || escape_truncated) ? "true" : "false"
+  );
+
+  if (suffix_len < 0 || suffix_offset + (size_t)suffix_len >= sizeof(pigeon_ws_shell_body)) {
+    LOG_ERR("WS: shell_output suffix build failed/overflowed (suffix_len=%d)", suffix_len);
+    return -ENOMEM;
+  }
+
+  return pigeon_ws_send_text(pigeon_ws_shell_body, suffix_offset + (size_t)suffix_len, false);
+}
+#endif /* CONFIG_PIGEON_SHELL */
+
 /* Handles one already-received frame: rx_buf[0..len) is the message
  * payload (text opcode assumed by the caller). */
 static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
@@ -632,9 +747,31 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
     return;
   }
 
+#if defined(CONFIG_PIGEON_SHELL)
+  if (strcmp(pigeon_ws_frame.type, "shell_cmd") == 0) {
+    memset(&pigeon_ws_shell_cmd, 0, sizeof(pigeon_ws_shell_cmd));
+
+    int64_t shell_decoded = json_obj_parse(
+        (char *)buf, len, pigeon_ws_shell_cmd_descr, ARRAY_SIZE(pigeon_ws_shell_cmd_descr),
+        &pigeon_ws_shell_cmd
+    );
+
+    if (shell_decoded < 0 ||
+        (shell_decoded & (PIGEON_WS_SHELL_FIELD_REQUEST_ID | PIGEON_WS_SHELL_FIELD_CMD)) !=
+            (PIGEON_WS_SHELL_FIELD_REQUEST_ID | PIGEON_WS_SHELL_FIELD_CMD)) {
+      LOG_WRN("WS: dropping malformed shell_cmd frame (decoded=%lld)", shell_decoded);
+      return;
+    }
+
+    pigeon_shell_handle_cmd(pigeon_ws_shell_cmd.request_id, pigeon_ws_shell_cmd.cmd);
+    return;
+  }
+#endif /* CONFIG_PIGEON_SHELL */
+
   /* Forward-compat: dovecote's frame dispatch may grow new types (e.g.
-   * task #34's remote shell) without breaking already-deployed devices --
-   * ignore anything we don't recognize rather than treating it as an error. */
+   * task #34's remote shell, when CONFIG_PIGEON_SHELL is off) without
+   * breaking already-deployed devices -- ignore anything we don't
+   * recognize rather than treating it as an error. */
   LOG_DBG("WS: ignoring frame of unhandled type '%s'", pigeon_ws_frame.type);
 }
 

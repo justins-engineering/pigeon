@@ -234,6 +234,76 @@ config PIGEON_WS_THREAD_STACK_SIZE
 
 endif # PIGEON_WS
 
+config PIGEON_SHELL
+  bool "Remote diagnostic shell over the device WebSocket channel"
+  default n
+  depends on PIGEON_WS
+  select SHELL
+  select SHELL_BACKEND_DUMMY
+  help
+    Lets an operator run a small, owner-configured allowlist of diagnostic
+    shell commands on this device remotely, relayed over the existing
+    CONFIG_PIGEON_WS socket (task #34). This is remote code execution on
+    the device by design -- off by default, and even once enabled, denies
+    every command unless it matches CONFIG_PIGEON_SHELL_ALLOWLIST (or
+    CONFIG_PIGEON_SHELL_ALLOW_ALL is explicitly set). Only enable for
+    fleets where an operator-triggered diagnostic shell is a deliberate,
+    reviewed choice -- see pigeon's CLAUDE.md for the full design writeup.
+    Commands run on a dedicated thread, never inline on the WS worker
+    thread, so a hung command can't stall pings/reconnect (it can still
+    wedge the device itself until reboot -- there is no command
+    cancellation in v1, which is exactly why the allowlist should only
+    ever contain fast, bounded, read-mostly diagnostics).
+
+if PIGEON_SHELL
+
+config PIGEON_SHELL_ALLOWLIST
+  string "Comma-separated allowed command prefixes"
+  default ""
+  help
+    A command is permitted only if it matches one of these prefixes
+    exactly, or the prefix followed by a space (so "pigeon shadow" allows
+    "pigeon shadow" and "pigeon shadow foo", but not "pigeon shadowfoo").
+    Checked in pigeon_shell.c before shell_execute_cmd() is ever called --
+    deliberately not relying on "don't enable dangerous shell Kconfig
+    options" as the sole defense, since that posture silently breaks the
+    next time an unrelated shell-producing Kconfig option gets turned on
+    for a different reason. Left empty (the default): every command is
+    denied, since CONFIG_PIGEON_SHELL alone only wires up the transport,
+    not any permitted commands -- the device owner must deliberately
+    populate this list (or set CONFIG_PIGEON_SHELL_ALLOW_ALL) before this
+    feature can execute anything at all. Example:
+    "pigeon version,pigeon shadow,pigeon ws status".
+
+config PIGEON_SHELL_ALLOW_ALL
+  bool "Allow ALL shell commands (disables command filtering)"
+  default n
+  help
+    WARNING: this disables CONFIG_PIGEON_SHELL_ALLOWLIST entirely and lets
+    the operator dashboard run ANY command compiled into this device's
+    shell, including anything a driver/subsystem's own shell module
+    happens to register (kernel introspection, flash/devmem pokes,
+    reboot, etc.) -- whatever that surface turns out to be, present and
+    future, as this build's Kconfig changes over time. This is an
+    explicit escape hatch for a device owner who has reviewed their own
+    firmware's shell command surface and deliberately wants full
+    flexibility with no on-device filtering -- "their device, their
+    rules." Leave off (the default) unless you have made that call
+    knowingly.
+
+config PIGEON_SHELL_THREAD_STACK_SIZE
+  int "Shell command execution thread stack size (bytes)"
+  default 4096
+  help
+    Dedicated thread so a hung/slow shell_execute_cmd() call can never
+    stall the CONFIG_PIGEON_WS worker thread's ping/reconnect loop --
+    see this option's parent help text. Fed by a depth-1 k_msgq: v1 is
+    one command in flight per device by design, a second shell_cmd
+    arriving mid-execution gets an immediate "busy" shell_output reply
+    rather than being queued or silently dropped.
+
+endif # PIGEON_SHELL
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled
