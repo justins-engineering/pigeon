@@ -20,7 +20,9 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * top of whatever app-level keys (log/telemetry_interval/reboot) were
  * already there. */
 #define PIGEON_HTTPS_RECV_BUF_LEN 768
-#define PIGEON_HTTPS_CONFIG_MAX 320
+/* PIGEON_HTTPS_CONFIG_MAX itself now lives in pigeon_internal.h -- pigeon_ws.c's
+ * shadow_update frame decode (see zephyr/Kconfig: CONFIG_PIGEON_WS) shares the
+ * same cap on target_config/current_config, so one file owns the definition. */
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
 
 /* Parsed once (lazily, on first use) from CONFIG_PIGEON_ENDPOINT, e.g.

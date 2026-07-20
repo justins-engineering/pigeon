@@ -175,6 +175,65 @@ config PIGEON_FOTA_CURRENT_VERSION
 
 endif # PIGEON_FOTA
 
+config PIGEON_WS
+  bool "WebSocket push channel (persistent connection to <endpoint>/ws)"
+  default n
+  depends on PIGEON_CONNECTOR_HTTPS
+  select WEBSOCKET_CLIENT
+  select NET_CONTEXT_SNDTIMEO
+  help
+    Persistent wss:// connection to <CONFIG_PIGEON_ENDPOINT>/ws (dovecote's
+    device WebSocket endpoint, task #32). Server pushes shadow_update frames
+    on dashboard config writes so the device reacts without polling; the
+    device sends application-level ping keepalives and (opportunistically)
+    telemetry frames over the open socket. HTTPS remains the transport for
+    shadow GET/report-back, log upload, and FOTA -- WS is push + telemetry
+    only. Reuses CONFIG_PIGEON_ENDPOINT / CONFIG_PIGEON_TOKEN /
+    CONFIG_PIGEON_HTTPS_SEC_TAG; no separate WS credentials exist.
+    Zephyr's WEBSOCKET_CLIENT is marked EXPERIMENTAL upstream.
+    NET_CONTEXT_SNDTIMEO is required for SO_SNDTIMEO (set on the WS socket
+    in pigeon_ws_open_tls_socket()) to have any effect -- without it, every
+    blocking send on this socket, including Zephyr's own internal CLOSE-frame
+    echo, defaults to an unbounded wait (see that function's comment).
+
+if PIGEON_WS
+
+config PIGEON_WS_RX_BUF_SIZE
+  int "WS receive/scratch buffer size (bytes)"
+  default 1024
+  help
+    Sizes both websocket_request.tmp_buf (HTTP upgrade response + frame
+    parse scratch, must outlive the connection) and the frame reassembly
+    buffer a shadow_update must fit into. A shadow_update carries the full
+    PigeonShadow with two escaped JSON-string configs; the HTTPS connector
+    caps each decoded config at PIGEON_HTTPS_CONFIG_MAX (320), so 1024
+    covers the framed/escaped equivalent. Server-side hard cap per frame
+    is 16384 (dovecote MAX_WS_FRAME_BYTES); oversized inbound frames are
+    drained and dropped with a warning, not fatal.
+
+config PIGEON_WS_PING_INTERVAL_SEC
+  int "Keepalive ping interval (seconds)"
+  default 60
+  help
+    The server NEVER pings (dovecote objects/ws.rs: WsOutboundFrame::Ping
+    is dead code); the device owns keepalive. Each interval sends
+    {"type":"ping"} and expects {"type":"pong"}. Two consecutive missed
+    pongs mark the connection half-open and force a reconnect. Budget:
+    well under the server's 50-frames/10s limit.
+
+config PIGEON_WS_RECONNECT_MAX_DELAY_SEC
+  int "Reconnect backoff ceiling (seconds)"
+  default 300
+
+config PIGEON_WS_THREAD_STACK_SIZE
+  int "WS worker thread stack size (bytes)"
+  default 8192
+  help
+    The worker thread performs the TLS handshake (mbedTLS) itself; 8192
+    matches wifi_init's TLS-proven CONFIG_MAIN_STACK_SIZE precedent.
+
+endif # PIGEON_WS
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled

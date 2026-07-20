@@ -64,4 +64,31 @@ int pigeon_transport_download_firmware(
 );
 #endif /* CONFIG_PIGEON_FOTA */
 
+/*
+ * Shared cap on a decoded shadow target_config/current_config's raw JSON
+ * byte length. Originated in pigeon_https.c (see its history for the
+ * 640/256 -> 320 bump when the "firmware" shadow key landed); moved here so
+ * pigeon_ws.c's shadow_update frame decode (CONFIG_PIGEON_WS, below) can
+ * share the exact same cap rather than drifting its own. pigeon_coap.c
+ * intentionally keeps its own separate, smaller PIGEON_COAP_CONFIG_MAX --
+ * CoAP has no WS counterpart and unifying the two isn't part of this reuse
+ * rule.
+ */
+#define PIGEON_HTTPS_CONFIG_MAX 320
+
+#if defined(CONFIG_PIGEON_WS)
+/*
+ * Implemented only by pigeon_ws.c. Sends {"type":"telemetry","metrics":
+ * {"<key-esc>":"<val-esc>"}} over the open WS socket. Returns 0 on send
+ * success, -ENOTCONN when the socket is down (caller falls back to the
+ * HTTPS transport hook, pigeon_transport_report_shadow() above). This is
+ * fire-and-forget: the server sends no ack and swallows internal failures
+ * silently -- acceptable for latest-value-per-key telemetry, NOT
+ * acceptable for shadow_report, which therefore stays on HTTPS where an
+ * HTTP status confirms persistence (see pigeon_shadow_flush() in
+ * pigeon_core.c for the fallback wiring).
+ */
+int pigeon_ws_report_telemetry(const char *key, const char *val);
+#endif /* CONFIG_PIGEON_WS */
+
 #endif /* PIDGEIOT_PIGEON_INTERNAL_H_ */

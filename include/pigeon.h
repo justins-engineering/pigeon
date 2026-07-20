@@ -214,6 +214,73 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info);
  */
 int pigeon_fota_confirm_boot(void);
 
+#if defined(CONFIG_PIGEON_WS)
+
+/**
+ * Events delivered to the callback passed to pigeon_ws_start(). Invoked
+ * from the WS worker thread -- do not block in the callback, signal your
+ * own thread instead (see pigeon_ws_event_cb_t below).
+ */
+enum pigeon_ws_event {
+  /** Socket just came up (initial connect or a reconnect). The server
+   * sends no state snapshot on accept, so the app should re-sync via
+   * pigeon_shadow_get() now to pick up anything pushed while disconnected. */
+  PIGEON_WS_EVENT_CONNECTED,
+  /** Socket lost. Reconnect with backoff is automatic; this is purely
+   * informational. */
+  PIGEON_WS_EVENT_DISCONNECTED,
+  /** The server pushed a shadow_update frame (a dashboard PUT landed). */
+  PIGEON_WS_EVENT_SHADOW_UPDATE,
+};
+
+/*
+ * Invoked from the WS worker thread. For PIGEON_WS_EVENT_SHADOW_UPDATE,
+ * shadow points at module-static storage valid only for the duration of
+ * the callback (same aliasing contract as pigeon_shadow_get(), but a
+ * tighter lifetime -- copy out anything you need before returning); NULL
+ * for the other two events. Do not block in this callback.
+ */
+typedef void (*pigeon_ws_event_cb_t)(
+    enum pigeon_ws_event ev, const struct pigeon_shadow_doc *shadow
+);
+
+/**
+ * @brief Start the persistent WebSocket push channel.
+ *
+ * Spawns a dedicated worker thread that connects to
+ * <CONFIG_PIGEON_ENDPOINT>/ws (device-authenticated the same way as the
+ * HTTPS connector) and reconnects forever with backoff on any drop. Safe
+ * to call once per boot, after pigeon_init(). Frame protocol, keepalive,
+ * and reconnect policy are internal -- see pigeon_ws.c.
+ *
+ * @param cb Event callback, invoked from the worker thread. May be NULL if
+ *           the app doesn't care about events (telemetry-over-WS via
+ *           pigeon_shadow_flush() still works either way).
+ * @return 0 on success, negative errno if the worker thread could not be
+ *         started.
+ */
+int pigeon_ws_start(pigeon_ws_event_cb_t cb);
+
+/**
+ * @brief Gracefully stop the WebSocket push channel.
+ *
+ * Sends a proper CLOSE frame (rather than just dropping the connection)
+ * and joins the worker thread. Call before sys_reboot() (e.g. the shadow
+ * "reboot": true path) so the server sees a clean close.
+ *
+ * @return 0 on success, negative errno on failure to tear down cleanly
+ *         (the thread is still joined either way).
+ */
+int pigeon_ws_stop(void);
+
+/**
+ * @brief Whether the WS socket is currently up.
+ * @return true if connected, false if disconnected/reconnecting/not started.
+ */
+bool pigeon_ws_connected(void);
+
+#endif /* CONFIG_PIGEON_WS */
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <pigeon.h>
 #include <stdbool.h>
 #include <string.h>
@@ -163,7 +164,17 @@ int pigeon_shadow_flush(void) {
     return -ENODATA;
   }
 
-  int err = pigeon_transport_report_shadow(pigeon_state.pending_key, pigeon_state.pending_val);
+  int err;
+
+#if defined(CONFIG_PIGEON_WS)
+  /* Saves a full TLS connect/request/teardown cycle per report when the WS
+   * socket is up; falls back to HTTPS (below) when it isn't, or on any
+   * other WS send failure -- see pigeon_ws_report_telemetry()'s docs on
+   * why this is safe only for telemetry, never for shadow_report. */
+  err = pigeon_ws_report_telemetry(pigeon_state.pending_key, pigeon_state.pending_val);
+  if (err == -ENOTCONN)
+#endif
+  err = pigeon_transport_report_shadow(pigeon_state.pending_key, pigeon_state.pending_val);
 
   if (err) {
     LOG_WRN(
