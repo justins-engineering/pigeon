@@ -15,6 +15,18 @@
 const struct pigeon_coap_config *pigeon_active_coap_config(void);
 
 /*
+ * Escapes '"' and '\', plus every RFC 8259 sec 7 control character
+ * (0x00-0x1F), so an arbitrary caller string (a shadow telemetry key/val,
+ * see pigeon_set_shadow_param()) can't break out of the JSON string it's
+ * embedded in, or otherwise produce invalid JSON. Truncates rather than
+ * overflows if out is too small. Implemented once in pigeon_core.c --
+ * pigeon_https.c and pigeon_coap.c each used to carry their own identical
+ * copy of this; pigeon_ws.c would have made a third, so this was promoted
+ * out instead.
+ */
+size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
+
+/*
  * Implemented by whichever transport module is compiled in (pigeon_https.c
  * or pigeon_coap.c -- see CMakeLists.txt's zephyr_library_sources_ifdef, only
  * one is ever built). Sends a single telemetry key/val to the platform:

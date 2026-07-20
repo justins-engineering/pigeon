@@ -271,23 +271,6 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
-/* Escapes '"' and '\' so key/val (arbitrary caller strings, see
- * pigeon_set_shadow_param()) can't break out of the JSON string they're
- * embedded in below. Truncates rather than overflows if out is too small. */
-static size_t pigeon_https_json_escape(const char *in, char *out, size_t out_len) {
-  size_t o = 0;
-
-  for (size_t i = 0; in[i] != '\0' && o + 2 < out_len; i++) {
-    if (in[i] == '"' || in[i] == '\\') {
-      out[o++] = '\\';
-    }
-    out[o++] = in[i];
-  }
-  out[o] = '\0';
-
-  return o;
-}
-
 int pigeon_transport_report_shadow(const char *key, const char *val) {
   int err = pigeon_https_parse_endpoint();
 
@@ -310,13 +293,17 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
   snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
   const char *headers[] = {auth_header, NULL};
 
-  /* Escaped forms can be up to ~2x the raw key/val (PIGEON_SHADOW_KEY_MAX=32,
-   * PIGEON_SHADOW_VAL_MAX=128 in pigeon_core.c). */
-  char key_esc[64];
-  char val_esc[256];
+  /* Escaped forms can be up to ~6x the raw key/val in the worst case (every
+   * byte a control character needing \u00XX -- pigeon_json_escape()'s only
+   * unescaped-length guarantee is truncation, never overflow, but sizing
+   * for the true worst case avoids silently losing most of an otherwise-
+   * legitimate value). PIGEON_SHADOW_KEY_MAX=32/PIGEON_SHADOW_VAL_MAX=128
+   * in pigeon_core.c -- 32*6+1=193, 128*6+1=769, rounded up. */
+  char key_esc[200];
+  char val_esc[800];
 
-  pigeon_https_json_escape(key, key_esc, sizeof(key_esc));
-  pigeon_https_json_escape(val, val_esc, sizeof(val_esc));
+  pigeon_json_escape(key, key_esc, sizeof(key_esc));
+  pigeon_json_escape(val, val_esc, sizeof(val_esc));
 
   char body[sizeof(key_esc) + sizeof(val_esc) + 8];
 

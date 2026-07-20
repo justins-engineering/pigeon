@@ -28,6 +28,63 @@ const struct pigeon_coap_config *pigeon_active_coap_config(void) {
   return &pigeon_coap_cfg;
 }
 
+/* Escapes '"' and '\', plus every RFC 8259 sec 7 control character
+ * (0x00-0x1F) -- \n/\r/\t via their shorthand, everything else via \u00XX --
+ * so an arbitrary caller string (a shadow telemetry key/val, see
+ * pigeon_set_shadow_param()) can't break out of the JSON string it's
+ * embedded in, or otherwise produce invalid JSON. Truncates rather than
+ * overflows if out is too small. */
+size_t pigeon_json_escape(const char *in, char *out, size_t out_len) {
+  static const char hex_digits[] = "0123456789abcdef";
+  size_t o = 0;
+
+  for (size_t i = 0; in[i] != '\0'; i++) {
+    unsigned char c = (unsigned char)in[i];
+
+    if (c == '"' || c == '\\') {
+      if (o + 2 >= out_len) {
+        break;
+      }
+      out[o++] = '\\';
+      out[o++] = (char)c;
+    } else if (c == '\n' || c == '\r' || c == '\t') {
+      /* RFC 8259 sec 7 shorthand escapes. */
+      if (o + 2 >= out_len) {
+        break;
+      }
+      out[o++] = '\\';
+      out[o++] = (c == '\n') ? 'n' : (c == '\r') ? 'r' : 't';
+    } else if (c < 0x20) {
+      /* Every other control character (0x00-0x1F) is illegal unescaped in
+       * a JSON string per RFC 8259 sec 7, and has no shorthand -- \u00XX
+       * is the only option. Caught by real-world use: an arbitrary
+       * caller-supplied telemetry value (e.g. a sensor error string) with
+       * an embedded raw control byte used to produce invalid JSON here;
+       * over HTTPS/CoAP that failed one isolated report, but over
+       * pigeon_ws.c's shared persistent socket it got the whole connection
+       * closed by dovecote's strict serde_json parse (code 4003), tearing
+       * down shadow_update push delivery along with the one bad report. */
+      if (o + 6 >= out_len) {
+        break;
+      }
+      out[o++] = '\\';
+      out[o++] = 'u';
+      out[o++] = '0';
+      out[o++] = '0';
+      out[o++] = hex_digits[(c >> 4) & 0xF];
+      out[o++] = hex_digits[c & 0xF];
+    } else {
+      if (o + 1 >= out_len) {
+        break;
+      }
+      out[o++] = (char)c;
+    }
+  }
+  out[o] = '\0';
+
+  return o;
+}
+
 int pigeon_init(const struct pigeon_config* config) {
   if (!config || !config->device_id) {
     LOG_ERR("Invalid configuration parameters supplied");
