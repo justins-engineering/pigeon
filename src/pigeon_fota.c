@@ -6,6 +6,7 @@
 #include <string.h>
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/util.h>
 
 #include "pigeon_internal.h"
@@ -45,6 +46,60 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info) {
   return strcmp(info->version, CONFIG_PIGEON_FOTA_CURRENT_VERSION) != 0;
 }
 
+/*
+ * Rejects a firmware target whose declared size can't possibly fit THIS
+ * device's own MCUboot secondary slot, before pigeon_fota_apply() touches
+ * flash or the network at all.
+ *
+ * Motivated by a real incident: a shadow firmware target sized for one
+ * board's flash geometry, applied on a device provisioned with different
+ * (smaller) partitions, made it past pigeon_fota_apply()'s prior checks and
+ * into the flash write path, where it tripped a TF-M Secure Fault -- TF-M
+ * failed safe (no corruption), but the device halted and stayed down until
+ * a manual reset, i.e. a remotely-triggerable DoS from nothing more than a
+ * mismatched (or malicious) shadow target. dfu_target_mcuboot_init() (see
+ * the vendored nrf/subsys/dfu/dfu_target/src/dfu_target_mcuboot.c) already
+ * carries its own size check against the same secondary slot and returns
+ * -EFBIG on the plain "image too big" case, but only after
+ * dfu_target_mcuboot_set_buf()/dfu_target_init() have already set up DFU
+ * session state -- this check runs strictly before any of that, and is
+ * deliberately independent of it as defense-in-depth: querying the slot
+ * geometry a second way (flash_area, not dfu_target's internal size table)
+ * means a bug in one path doesn't silently defeat the other.
+ *
+ * slot1_partition is the same devicetree label
+ * nrf/subsys/dfu/dfu_target/src/dfu_target_mcuboot.c resolves internally
+ * for image 0 on this codebase's devicetree-based (non-Partition-Manager)
+ * partitioning -- reusing it here rather than hardcoding a size keeps this
+ * check accurate for whichever board's overlay this firmware was actually
+ * built against, the same guarantee dfu_target_mcuboot's own check relies
+ * on.
+ */
+static int pigeon_fota_check_geometry(const struct pigeon_fota_info *info) {
+  const struct flash_area *secondary_fa;
+  int err = flash_area_open(FIXED_PARTITION_ID(slot1_partition), &secondary_fa);
+
+  if (err) {
+    LOG_ERR("FOTA: flash_area_open(slot1_partition) failed: %d", err);
+    return err;
+  }
+
+  size_t slot_size = secondary_fa->fa_size;
+
+  flash_area_close(secondary_fa);
+
+  if ((size_t)info->size > slot_size) {
+    LOG_ERR(
+        "FOTA: firmware target %s (%d bytes) exceeds this device's MCUboot "
+        "secondary slot (%zu bytes) -- refusing a geometry-mismatched target",
+        info->version, info->size, slot_size
+    );
+    return -EFBIG;
+  }
+
+  return 0;
+}
+
 int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   if (!info || info->size <= 0) {
     return -EINVAL;
@@ -52,7 +107,13 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
 
   LOG_INF("FOTA: applying firmware %s (%d bytes)", info->version, info->size);
 
-  int err = dfu_target_mcuboot_set_buf(pigeon_fota_flash_buf, sizeof(pigeon_fota_flash_buf));
+  int err = pigeon_fota_check_geometry(info);
+
+  if (err) {
+    return err;
+  }
+
+  err = dfu_target_mcuboot_set_buf(pigeon_fota_flash_buf, sizeof(pigeon_fota_flash_buf));
 
   if (err) {
     LOG_ERR("FOTA: dfu_target_mcuboot_set_buf failed: %d", err);
