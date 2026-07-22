@@ -18,6 +18,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_dummy.h>
+#include <zephyr/shell/shell_log_backend.h>
 
 #include "pigeon_internal.h"
 
@@ -103,12 +104,44 @@ static void pigeon_shell_run(const struct pigeon_shell_request *req) {
 
   const struct shell *sh = shell_backend_dummy_get_ptr();
 
+  /* CONFIG_SHELL_LOG_BACKEND defaults to y whenever CONFIG_LOG=y (see
+   * zephyr/subsys/shell/Kconfig), and shell_dummy autostarts with it
+   * enabled at CONFIG_SHELL_DUMMY_INIT_LOG_LEVEL (default: info) --
+   * shell_execute_cmd() itself never touches this, it's purely a side
+   * effect of the dummy shell being a live log sink like any other shell
+   * backend. Log processing for this backend runs on shell_dummy's own
+   * internal thread (woken by SHELL_SIGNAL_LOG_MSG), fully independent of
+   * whichever thread is running our clear->execute->get_output window --
+   * so *any* LOG_* call anywhere in the image (including this file's own
+   * two log lines) that gets drained during that window lands straight in
+   * sh_dummy->buf via the same write() shell_execute_cmd()'s own output
+   * goes through. Confirmed empirically on native_sim: a background thread
+   * logging every few ms contaminated ~40% of captured outputs with
+   * interleaved log lines and shell escape sequences before this fix,
+   * 0/30 after.
+   *
+   * z_shell_log_backend_disable() flips this backend's state to
+   * SHELL_LOG_BACKEND_DISABLED, which its process() callback checks before
+   * ever copying a new message into its mpsc buffer (shell_log_backend.c)
+   * -- so nothing new can be queued for delivery here from the moment
+   * this call returns. Disabling before clear_output(), not after, means
+   * clear_output() also wipes out anything that landed in the tiny gap
+   * between disable() and clear() (the one part of this window disable()
+   * alone can't prevent: draining an already-queued message doesn't check
+   * this state, only enqueuing a new one does). z_shell_log_backend_enable()
+   * at the end restores normal shell log routing for the next poll/idle
+   * period, and its own internal fifo_reset() discards anything that
+   * queued up (and was rightly dropped) while we were disabled, so it
+   * doesn't all land in the *next* command's capture window instead. */
+  z_shell_log_backend_disable(sh->log_backend);
   shell_backend_dummy_clear_output(sh);
 
   int exit_code = shell_execute_cmd(sh, req->cmd);
 
   size_t out_len = 0;
   const char *output = shell_backend_dummy_get_output(sh, &out_len);
+
+  z_shell_log_backend_enable(sh->log_backend, (void *)sh, sh->ctx->log_level);
 
   /* shell_dummy.c's write() silently drops anything past
    * sizeof(sh_dummy->buf) - 1 with no error signal of its own (confirmed
