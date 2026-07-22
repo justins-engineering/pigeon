@@ -1,9 +1,12 @@
+#if defined(CONFIG_PIGEON_FOTA_NCS)
 #include <dfu/dfu_target.h>
 #include <dfu/dfu_target_mcuboot.h>
+#endif
 #include <errno.h>
 #include <pigeon.h>
 #include <psa/crypto.h>
 #include <string.h>
+#include <zephyr/dfu/flash_img.h>
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>
@@ -13,6 +16,7 @@
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
+#if defined(CONFIG_PIGEON_FOTA_NCS)
 /* Static (not stack) staging buffer handed to dfu_target_mcuboot_set_buf():
  * must stay valid for the whole DFU session, and a CONFIG_PIGEON_FOTA_CHUNK_SIZE
  * array on the stack would also eat a large fraction of CONFIG_MAIN_STACK_SIZE
@@ -20,11 +24,25 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * live during the download loop below. dfu_target_stream uses this to batch
  * partial writes up to flash write-block granularity -- unrelated to
  * pigeon_https.c's own receive buffers, which land data here via
- * pigeon_fota_chunk_buf below before this one ever sees it. */
+ * pigeon_fota_chunk_buf below before this one ever sees it. NCS-only: the
+ * default (non-NCS) backend below uses upstream Zephyr's flash_img_context
+ * instead, which carries its own equivalent staging buffer. */
 static uint8_t pigeon_fota_flash_buf[CONFIG_PIGEON_FOTA_CHUNK_SIZE] __aligned(4);
+#else
+/* Default (vanilla Zephyr) backend: upstream flash_img/stream_flash writes
+ * straight into the MCUboot secondary slot, and boot_request_upgrade()
+ * (zephyr/dfu/mcuboot.h -- a thin wrapper around MCUboot's own bootutil,
+ * not an NCS API) schedules the test-swap. Static, not stack, for the same
+ * reason as pigeon_fota_flash_buf above: struct flash_img_context carries
+ * its own CONFIG_IMG_BLOCK_BUF_SIZE staging buffer, too big to want living
+ * on pigeon_fota_apply()'s stack frame alongside the TLS/HTTP call chain
+ * already active during the download loop. */
+static struct flash_img_context pigeon_fota_flash_ctx;
+#endif
 
-/* Network receive target for each chunk, handed to dfu_target_write() once
- * a full chunk has arrived. */
+/* Network receive target for each chunk, handed to the active backend
+ * (dfu_target_write() or flash_img_buffered_write()) once a full chunk has
+ * arrived. Shared by both backends. */
 static uint8_t pigeon_fota_chunk_buf[CONFIG_PIGEON_FOTA_CHUNK_SIZE];
 
 static void pigeon_fota_hex_encode(const uint8_t *in, size_t in_len, char *out, size_t out_len) {
@@ -57,30 +75,29 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info) {
  * into the flash write path, where it tripped a TF-M Secure Fault -- TF-M
  * failed safe (no corruption), but the device halted and stayed down until
  * a manual reset, i.e. a remotely-triggerable DoS from nothing more than a
- * mismatched (or malicious) shadow target. dfu_target_mcuboot_init() (see
- * the vendored nrf/subsys/dfu/dfu_target/src/dfu_target_mcuboot.c) already
- * carries its own size check against the same secondary slot and returns
- * -EFBIG on the plain "image too big" case, but only after
- * dfu_target_mcuboot_set_buf()/dfu_target_init() have already set up DFU
- * session state -- this check runs strictly before any of that, and is
- * deliberately independent of it as defense-in-depth: querying the slot
- * geometry a second way (flash_area, not dfu_target's internal size table)
- * means a bug in one path doesn't silently defeat the other.
+ * mismatched (or malicious) shadow target. Both backends' own init path
+ * (dfu_target_mcuboot_init() on NCS, flash_img_init() upstream) carry their
+ * own size check against the same secondary slot and return -EFBIG/-ENOMEM
+ * on the plain "image too big" case, but only after session state (a set
+ * staging buffer, an opened flash_area) already exists -- this check runs
+ * strictly before any of that, and is deliberately independent of it as
+ * defense-in-depth: querying the slot geometry a second way (flash_area
+ * directly, not either backend's own internal size table) means a bug in
+ * one path doesn't silently defeat the other.
  *
- * slot1_partition is the same devicetree label
- * nrf/subsys/dfu/dfu_target/src/dfu_target_mcuboot.c resolves internally
- * for image 0 on this codebase's devicetree-based (non-Partition-Manager)
- * partitioning -- reusing it here rather than hardcoding a size keeps this
- * check accurate for whichever board's overlay this firmware was actually
- * built against, the same guarantee dfu_target_mcuboot's own check relies
- * on.
+ * flash_img_get_upload_slot() (upstream zephyr/dfu/flash_img.h) is the same
+ * area-id resolution either backend ultimately targets -- it already
+ * accounts for the slot0-vs-slot1/TF-M-_ns-2-image cases a hardcoded
+ * partition label wouldn't, and is available unconditionally since
+ * flash_img.c is always compiled whenever IMG_MANAGER is on (a dependency
+ * both backends already share via CONFIG_PIGEON_FOTA's Kconfig).
  */
 static int pigeon_fota_check_geometry(const struct pigeon_fota_info *info) {
   const struct flash_area *secondary_fa;
-  int err = flash_area_open(FIXED_PARTITION_ID(slot1_partition), &secondary_fa);
+  int err = flash_area_open(flash_img_get_upload_slot(), &secondary_fa);
 
   if (err) {
-    LOG_ERR("FOTA: flash_area_open(slot1_partition) failed: %d", err);
+    LOG_ERR("FOTA: flash_area_open(upload slot) failed: %d", err);
     return err;
   }
 
@@ -113,6 +130,7 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
     return err;
   }
 
+#if defined(CONFIG_PIGEON_FOTA_NCS)
   err = dfu_target_mcuboot_set_buf(pigeon_fota_flash_buf, sizeof(pigeon_fota_flash_buf));
 
   if (err) {
@@ -125,13 +143,22 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
     LOG_ERR("FOTA: dfu_target_init failed: %d", err);
     return err;
   }
+#else
+  err = flash_img_init(&pigeon_fota_flash_ctx);
+  if (err) {
+    LOG_ERR("FOTA: flash_img_init failed: %d", err);
+    return err;
+  }
+#endif
 
   psa_status_t pstatus = psa_crypto_init();
 
   if (pstatus != PSA_SUCCESS) {
     LOG_ERR("FOTA: psa_crypto_init failed: %d", pstatus);
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     dfu_target_done(false);
     dfu_target_reset();
+#endif
     return -EIO;
   }
 
@@ -140,8 +167,10 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   pstatus = psa_hash_setup(&hash_op, PSA_ALG_SHA_256);
   if (pstatus != PSA_SUCCESS) {
     LOG_ERR("FOTA: psa_hash_setup failed: %d", pstatus);
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     dfu_target_done(false);
     dfu_target_reset();
+#endif
     return -EIO;
   }
 
@@ -180,9 +209,17 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
       break;
     }
 
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     err = dfu_target_write(pigeon_fota_chunk_buf, got);
+#else
+    /* flush only on the very last chunk -- flash_img_buffered_write() closes
+     * the flash_area itself once flush is set, mirroring dfu_target_done(). */
+    err = flash_img_buffered_write(
+        &pigeon_fota_flash_ctx, pigeon_fota_chunk_buf, got, offset + got >= total_size
+    );
+#endif
     if (err) {
-      LOG_ERR("FOTA: dfu_target_write failed at offset %zu: %d", offset, err);
+      LOG_ERR("FOTA: flash write failed at offset %zu: %d", offset, err);
       failed = true;
       break;
     }
@@ -201,8 +238,18 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
 
   if (failed) {
     psa_hash_abort(&hash_op);
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     dfu_target_done(false);
     dfu_target_reset();
+#else
+    /* Only close here if the loop broke before ever reaching a flush=true
+     * write -- once that happens flash_img_buffered_write() already closed
+     * the area and nulled the pointer, same guard it uses internally. */
+    if (pigeon_fota_flash_ctx.flash_area) {
+      flash_area_close(pigeon_fota_flash_ctx.flash_area);
+      pigeon_fota_flash_ctx.flash_area = NULL;
+    }
+#endif
     return err;
   }
 
@@ -212,8 +259,10 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   pstatus = psa_hash_finish(&hash_op, digest, sizeof(digest), &digest_len);
   if (pstatus != PSA_SUCCESS || digest_len != sizeof(digest)) {
     LOG_ERR("FOTA: psa_hash_finish failed: %d", pstatus);
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     dfu_target_done(false);
     dfu_target_reset();
+#endif
     return -EIO;
   }
 
@@ -228,13 +277,16 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
    * silently tolerating it. */
   if (strcmp(digest_hex, info->sha256) != 0) {
     LOG_ERR("FOTA: sha256 mismatch: expected %s, got %s", info->sha256, digest_hex);
+#if defined(CONFIG_PIGEON_FOTA_NCS)
     dfu_target_done(false);
     dfu_target_reset();
+#endif
     return -EBADMSG;
   }
 
   LOG_INF("FOTA: sha256 verified (%s)", digest_hex);
 
+#if defined(CONFIG_PIGEON_FOTA_NCS)
   err = dfu_target_done(true);
   if (err) {
     LOG_ERR("FOTA: dfu_target_done failed: %d", err);
@@ -247,6 +299,17 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
     LOG_ERR("FOTA: dfu_target_schedule_update failed: %d", err);
     return err;
   }
+#else
+  /* Upstream Zephyr/MCUboot equivalent of dfu_target_schedule_update(0):
+   * flash_img_buffered_write()'s final flush=true call above already closed
+   * out the write session, this just marks the secondary slot for a
+   * one-time test-swap on next boot. */
+  err = boot_request_upgrade(BOOT_UPGRADE_TEST);
+  if (err) {
+    LOG_ERR("FOTA: boot_request_upgrade failed: %d", err);
+    return err;
+  }
+#endif
 
   LOG_INF("FOTA: image staged and scheduled for test-swap; ready for graceful reboot");
 
