@@ -117,21 +117,17 @@ config PIGEON_FOTA
   depends on PIGEON_CONNECTOR_HTTPS
   depends on BOOTLOADER_MCUBOOT
   depends on IMG_MANAGER
-  select DFU_TARGET
-  select DFU_TARGET_MCUBOOT
   select PSA_CRYPTO
   select PSA_WANT_ALG_SHA_256
   help
     Chunked HTTP Range-GET download of the firmware image named in the
     shadow's target_config "firmware" key (see capsules/dovecote's
     shadow-driven FOTA route) straight into MCUboot's secondary slot
-    via Zephyr's dfu_target/flash_img as it streams -- the image
-    (up to ~1-2MB) is never held whole in RAM. Verifies the downloaded
-    byte count and a streamed sha256 against the shadow-declared
-    size/sha256 before scheduling a one-time test-swap
-    (dfu_target_schedule_update, equivalent to
-    boot_request_upgrade(BOOT_UPGRADE_TEST)). Does not reboot itself --
-    the caller must gracefully tear down its own connectivity (e.g.
+    as it streams -- the image (up to ~1-2MB) is never held whole in
+    RAM. Verifies the downloaded byte count and a streamed sha256
+    against the shadow-declared size/sha256 before scheduling a
+    one-time test-swap. Does not reboot itself -- the caller must
+    gracefully tear down its own connectivity (e.g.
     lte_lc_power_off()/lte_disconnect()) and call sys_reboot() once
     pigeon_fota_apply() returns 0, same convention as the existing
     shadow "reboot": true command. Off by default -- existing samples
@@ -141,13 +137,38 @@ config PIGEON_FOTA
     connector only; the CoAP connector has no download transport for
     this yet.
 
+    Default backend is upstream Zephyr's own flash_img/stream_flash +
+    boot_request_upgrade() (see PIGEON_FOTA_NCS below for the vendor
+    alternative) -- no nRF Connect SDK dependency needed for FOTA on a
+    plain vanilla Zephyr build.
+
     MCUboot's own image signature check is the security boundary for
     firmware authenticity here (this library's sha256 check is only an
     integrity check against transport/flash corruption, not a
     signature) -- production deployments must sign with a real key, not
-    NCS's dev key.
+    the default dev key.
 
 if PIGEON_FOTA
+
+config PIGEON_FOTA_NCS
+  bool "Use the nRF Connect SDK dfu_target backend instead of upstream flash_img"
+  default n
+  select DFU_TARGET
+  select DFU_TARGET_MCUBOOT
+  help
+    Swaps pigeon_fota.c's flash-write/schedule-update backend from
+    upstream Zephyr's flash_img_context + boot_request_upgrade() to
+    nRF Connect SDK's dfu_target/dfu_target_mcuboot -- functionally
+    equivalent (dfu_target_mcuboot itself is a thin wrapper over the
+    same flash_img/boot_request_upgrade primitives underneath), kept
+    around as the vendor-SDK path because it's what real nRF91
+    hardware e2e was actually verified against (see this library's
+    CLAUDE.md, task #23-24) before the default was inverted to the
+    vendor-neutral upstream path. Only meaningful -- and only
+    buildable -- under an nRF Connect SDK west workspace (west.yml,
+    not west-vanilla.yml, in the sibling pigeon-examples repo), since
+    DFU_TARGET/DFU_TARGET_MCUBOOT are defined by the nrf module, not
+    plain Zephyr.
 
 config PIGEON_FOTA_CHUNK_SIZE
   int "FOTA download chunk size (bytes)"
