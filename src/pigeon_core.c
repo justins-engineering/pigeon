@@ -115,6 +115,10 @@ int pigeon_init(const struct pigeon_config* config) {
   pigeon_state.initialized = true;
   LOG_INF("Pigeon tracking instance ready: %s", config->device_id);
 
+#if defined(CONFIG_PIGEON_WATCHDOG)
+  pigeon_watchdog_start();
+#endif
+
   return 0;
 }
 
@@ -186,6 +190,13 @@ int pigeon_shadow_flush(void) {
 
   LOG_INF("Flushed shadow param: %s=%s", pigeon_state.pending_key, pigeon_state.pending_val);
   pigeon_state.pending = false;
+
+#if defined(CONFIG_PIGEON_WATCHDOG)
+  /* A successful report over WHICHEVER transport (WS telemetry or the
+   * HTTPS/CoAP fallback above) is confirmed round-trip liveness -- see
+   * zephyr/Kconfig's CONFIG_PIGEON_WATCHDOG help. */
+  pigeon_watchdog_feed();
+#endif
 
   return 0;
 }

@@ -687,6 +687,14 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
   }
 
   if (strcmp(pigeon_ws_frame.type, "pong") == 0) {
+#if defined(CONFIG_PIGEON_WATCHDOG)
+    /* A higher-frequency, app-config-independent heartbeat than
+     * pigeon_shadow_flush()'s success (which pigeon_core.c already feeds) --
+     * see zephyr/Kconfig's CONFIG_PIGEON_WATCHDOG help. A pong proves the WS
+     * worker thread, the network stack, and the server round trip are all
+     * still alive. */
+    pigeon_watchdog_feed();
+#endif
     k_mutex_lock(&pigeon_ws_lock, K_FOREVER);
     pigeon_ws.missed_pongs = 0;
     if (!pigeon_ws.pong_seen_this_connection) {

@@ -21,3 +21,5 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backen
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_WS              src/pigeon_ws.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_SHELL           src/pigeon_shell.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_WATCHDOG        src/pigeon_watchdog.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_REBOOT_ON_FATAL  src/pigeon_fatal.c)

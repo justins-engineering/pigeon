@@ -325,6 +325,142 @@ config PIGEON_SHELL_THREAD_STACK_SIZE
 
 endif # PIGEON_SHELL
 
+config PIGEON_REBOOT_ON_FATAL
+  bool "Reboot instead of hanging forever on a Zephyr fatal error"
+  default n
+  select REBOOT
+  help
+    Task #45's PRIMARY mitigation for the exact failure diagnosed in task
+    #15/#45 (see CONFIG_PIGEON_WATCHDOG below for the full trace/history):
+    real ESP32-C6 hardware hit a Zephyr FATAL error (z_fatal_error, an
+    "Environment call from M-mode" -- a deliberate ecall-based assert deep
+    inside Espressif's closed-source WiFi MAC blob, not a wild memory fault)
+    after 42-60 minutes of uptime. Zephyr's default policy for ANY fatal
+    error (k_sys_fatal_error_handler -> arch_system_halt(), see
+    zephyr/kernel/fatal.c) is to lock interrupts and spin forever --
+    confirmed on real hardware as total serial silence and zero response to
+    shell input, for over an hour, on both reproductions.
+
+    k_sys_fatal_error_handler() is documented and declared as an
+    application-overridable weak symbol for exactly this kind of policy
+    change (see zephyr/include/zephyr/fatal.h's own doc comment). This
+    option supplies that override: flush pending log output (LOG_PANIC(),
+    per that same doc comment's guidance for an unrecoverable error) and
+    call sys_reboot(SYS_REBOOT_COLD) instead of halting -- converting an
+    eternal hang into a deterministic, immediate self-reboot, entirely in
+    software, from the fault context itself, with no dependency on any
+    watchdog (task or hardware) ever needing to notice and fire. This is a
+    headless, unattended device library -- an operator has no console to
+    recover a hung unit from, so "reboot and try again" is the right
+    default posture for ANY fatal error here, even though it necessarily
+    discards whatever a real debugger session might otherwise inspect at
+    the fault site -- fine for a fleet device, not what you want while
+    actively debugging on a dev board (leave this off for that).
+
+    Complementary to, not a replacement for, CONFIG_PIGEON_WATCHDOG below:
+    this hook only runs for an error Zephyr's own fault handler recognizes
+    and calls out for (a real panic/assert/CPU fault) -- it does nothing
+    for a silent liveness stall where the kernel keeps scheduling normally
+    but application-level progress just stops (no fatal error ever fires).
+    That gap is what CONFIG_PIGEON_WATCHDOG's task-watchdog channel covers.
+
+config PIGEON_WATCHDOG
+  bool "Wedge-recovery watchdog (reboot on stalled liveness)"
+  default n
+  select TASK_WDT
+  select WATCHDOG
+  help
+    Task #15/#45: real ESP32-C6 soak testing found this library's WS/HTTPS
+    stack can hard-wedge after 42-60 minutes of uptime -- a rare, reconnect-
+    churn-triggered assert deep inside Espressif's closed-source WiFi MAC
+    blob (libnet80211.a, no source available -- see this library's CLAUDE.md
+    for the symbol-resolved trace), which trips Zephyr's OWN fatal-error
+    path (z_fatal_error -> k_sys_fatal_error_handler, an "Environment call
+    from M-mode" -- a deliberate ecall, not a wild memory fault) rather than
+    anything pigeon or the app did wrong. Two soaks confirmed the arena
+    the crash traces into (CONFIG_COMMON_LIBC_MALLOC_ARENA) never even gets
+    touched under normal operation, ruling out "just size something bigger"
+    -- this is a latent vendor bug, not a resource-exhaustion bug, and the
+    only available fix on this side is detecting the wedge and recovering
+    from it.
+
+    This option's job is narrower than CONFIG_PIGEON_REBOOT_ON_FATAL above,
+    which is the PRIMARY mitigation for the exact bug just described (a
+    real Zephyr fatal error, caught deterministically by that hook). This
+    option instead covers a DIFFERENT failure shape: a silent liveness
+    stall where the kernel itself keeps scheduling fine, but application-
+    level progress (WS pongs, telemetry/shadow round trips) just stops --
+    no fatal error ever fires, so the fatal-hook above never runs. It wraps
+    Zephyr's own Task Watchdog subsystem (CONFIG_TASK_WDT) rather than
+    inventing a bespoke mechanism: one channel, fed by confirmed round-trip
+    liveness (every successful pigeon_shadow_flush() telemetry report over
+    whichever transport is active, plus -- when CONFIG_PIGEON_WS is also on
+    -- every WS pong received, a higher-frequency heartbeat independent of
+    whatever telemetry_interval an operator has configured). If the channel
+    isn't fed within CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC, task_wdt's own
+    default behavior (no callback registered, see task_wdt_trigger() in
+    zephyr/subsys/task_wdt/task_wdt.c) fires sys_reboot(SYS_REBOOT_COLD).
+
+    CONFIG_TASK_WDT_HW_FALLBACK (on by default) is ALSO meant to be a
+    backstop for the interrupts-disabled case CONFIG_PIGEON_REBOOT_ON_FATAL
+    already handles via a cleaner path -- a genuine hardware timer,
+    independent of the CPU's interrupt state, forcing a full SoC reset once
+    its own window (CONFIG_TASK_WDT_MIN_TIMEOUT + CONFIG_TASK_WDT_HW_
+    FALLBACK_DELAY) expires with nobody left alive to keep feeding it.
+    **Known-broken on ESP32 targets as of this writing** (found verifying
+    this exact feature, task #45): zephyr/drivers/watchdog/wdt_esp32.c
+    passes the millisecond timeout value straight into wdt_hal_config_stage()
+    as raw hardware TICKS with no conversion (that HAL function's own doc
+    says its parameter is ticks; this driver defines the conversion
+    constants it would need, MWDT_TICK_PRESCALER/MWDT_TICKS_PER_US, but
+    never uses them -- confirmed by comparison against ESP-IDF's own
+    reference task-watchdog code in the same vendored tree, which does
+    convert). A deliberately forced interrupts-disabled hang
+    (arch_irq_lock(); for(;;){}) on real ESP32-C6 hardware did not recover
+    across two attempts, the second confirmed via continuous live serial
+    capture: zero bytes for 550+ seconds (~9.2 minutes) against an intended
+    ~120ms deadline -- ~4500x over, with no reset observed before we
+    stopped watching. Draft upstream report: pigeon-examples' docs/upstream-issues/
+    zephyr-wdt_esp32-missing-tick-conversion.md. Deliberately NOT working
+    around this here (e.g. with a compensating ms->ticks fudge factor) --
+    that would silently double-convert the day upstream fixes the driver,
+    and CONFIG_PIGEON_REBOOT_ON_FATAL already covers the failure this
+    project actually diagnosed, making the hardware-fallback gap an honest,
+    documented residual risk rather than a blocking one.
+
+    Vendor-neutral by construction, not an ESP32-specific option otherwise:
+    the hardware watchdog is looked up via this board's own `watchdog0`
+    devicetree alias (a standard Zephyr convention many boards implement,
+    not something this library selects a vendor driver for), so the
+    software-channel behavior (this option's actual job) benefits any
+    board/transport combination that can wedge the same way, not just
+    ESP32-C6 over WS. A board with no `watchdog0` alias still gets the
+    software-only task watchdog (logged as a reduced-guarantee warning at
+    start) rather than a build failure.
+
+if PIGEON_WATCHDOG
+
+config PIGEON_WATCHDOG_TIMEOUT_SEC
+  int "Wedge timeout before a forced reboot (seconds)"
+  default 900
+  help
+    How long this library can go without a confirmed liveness feed (see
+    the parent option's help) before treating the device as wedged.
+    Deliberately generous, not tight: CONFIG_PIGEON_WS_RECONNECT_MAX_DELAY_SEC
+    defaults to 300s, and a real-but-recovering outage (AP down for a few
+    minutes, several WiFi join retries) can legitimately go several backoff
+    cycles without a single successful pong or telemetry flush -- too short
+    a timeout here would reboot a device that was never actually wedged,
+    potentially into a reboot loop under ordinary network flakiness. 900s
+    (15 minutes) is comfortably above that worst-case healthy-reconnect
+    gap, while still well under the ~42-60 minute wedge window both real-
+    hardware soaks observed -- the device recovers on its own well before
+    an operator would notice via any external monitoring/alerting lag.
+    Tune per-fleet if a different margin makes sense; this default is a
+    reasoned starting point, not a measured optimum.
+
+endif # PIGEON_WATCHDOG
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled

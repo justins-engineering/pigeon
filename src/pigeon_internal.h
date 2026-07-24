@@ -128,4 +128,28 @@ int pigeon_ws_send_shell_output(
 void pigeon_shell_handle_cmd(const char *request_id, const char *cmd);
 #endif /* CONFIG_PIGEON_SHELL */
 
+#if defined(CONFIG_PIGEON_WATCHDOG)
+/*
+ * Implemented by pigeon_watchdog.c. Arms Zephyr's Task Watchdog subsystem
+ * (one channel, CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC) with this board's
+ * `watchdog0` hardware device as its fallback, if one exists -- see
+ * zephyr/Kconfig's CONFIG_PIGEON_WATCHDOG help for the full rationale.
+ * Called once from pigeon_init(). Safe to call even on a board with no
+ * `watchdog0` alias (falls back to a software-only channel, logged as a
+ * reduced-guarantee warning).
+ */
+void pigeon_watchdog_start(void);
+
+/*
+ * Implemented by pigeon_watchdog.c. Feeds the channel armed by
+ * pigeon_watchdog_start(), i.e. confirms to the watchdog that this call
+ * site's activity is evidence of a live, unwedged device -- see
+ * zephyr/Kconfig's CONFIG_PIGEON_WATCHDOG help for exactly which call
+ * sites do this (pigeon_core.c's pigeon_shadow_flush() success, and --
+ * CONFIG_PIGEON_WS only -- pigeon_ws.c's pong receipt). A no-op if
+ * pigeon_watchdog_start() was never called or failed to arm a channel.
+ */
+void pigeon_watchdog_feed(void);
+#endif /* CONFIG_PIGEON_WATCHDOG */
+
 #endif /* PIDGEIOT_PIGEON_INTERNAL_H_ */
