@@ -38,6 +38,19 @@ struct pigeon_shell_request {
 
 K_MSGQ_DEFINE(pigeon_shell_msgq, sizeof(struct pigeon_shell_request), 1, 4);
 
+/* Private snapshot of one command's captured output, taken inside the
+ * log-backend-disabled window below. shell_backend_dummy_get_output()
+ * returns a pointer into the live transport buffer, not a copy -- and
+ * z_shell_log_backend_enable() replays whatever log messages the deferred
+ * log core still retains straight back into that same buffer (observed on
+ * real ESP32-C6 hardware, 3/3 commands: the frame that reached dovecote
+ * carried the post-enable log flood -- including this file's own
+ * "Shell: executed" line, which is only ever logged *after* the capture
+ * window -- instead of the command's output). Sized to the same Kconfig
+ * ceiling as the buffer it snapshots, so nothing get_output() can return
+ * is ever silently cut here. */
+static char pigeon_shell_output_snapshot[CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE];
+
 /*
  * Checks cmd against CONFIG_PIGEON_SHELL_ALLOWLIST's comma-separated
  * prefixes -- a *positive* allowlist enforced here, before
@@ -141,6 +154,15 @@ static void pigeon_shell_run(const struct pigeon_shell_request *req) {
   size_t out_len = 0;
   const char *output = shell_backend_dummy_get_output(sh, &out_len);
 
+  /* Snapshot while the log backend is still disabled -- `output` aliases
+   * the live buffer, and the enable() below immediately starts refilling
+   * it (see pigeon_shell_output_snapshot's comment for the on-hardware
+   * failure this prevents). Everything after this memcpy works only with
+   * the copy. */
+  out_len = MIN(out_len, sizeof(pigeon_shell_output_snapshot) - 1);
+  memcpy(pigeon_shell_output_snapshot, output, out_len);
+  pigeon_shell_output_snapshot[out_len] = '\0';
+
   z_shell_log_backend_enable(sh->log_backend, (void *)sh, sh->ctx->log_level);
 
   /* shell_dummy.c's write() silently drops anything past
@@ -157,7 +179,7 @@ static void pigeon_shell_run(const struct pigeon_shell_request *req) {
       truncated ? "true" : "false"
   );
 
-  pigeon_ws_send_shell_output(req->request_id, output, exit_code, truncated);
+  pigeon_ws_send_shell_output(req->request_id, pigeon_shell_output_snapshot, exit_code, truncated);
 }
 
 static void pigeon_shell_thread_fn(void *p1, void *p2, void *p3) {
