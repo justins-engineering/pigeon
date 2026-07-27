@@ -92,10 +92,20 @@ int pigeon_init(const struct pigeon_config* config) {
     return -EINVAL;
   }
 
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || defined(CONFIG_PIGEON_CONNECTOR_COAP)
+  /* CONFIG_PIGEON_ENDPOINT/_TOKEN live outside "if PIGEON" in Kconfig (see
+   * its comment) so pigeon_core.c -- compiled unconditionally regardless of
+   * CONFIG_PIGEON -- always has a value to read. That means this guard must
+   * itself be gated on a connector actually being selected: a sample that
+   * leaves CONFIG_PIGEON off entirely (e.g. shadow_model, which only wants
+   * pigeon_init()'s bookkeeping and the shadow structs, no transport) gets
+   * empty-string defaults for both, and used to hard-fail here even though
+   * it never asked for a transport at all. */
   if (!*CONFIG_PIGEON_ENDPOINT || !*CONFIG_PIGEON_TOKEN) {
     LOG_ERR("CONFIG_PIGEON_ENDPOINT and CONFIG_PIGEON_TOKEN must be set");
     return -EINVAL;
   }
+#endif
 
   LOG_INF("Initializing Pigeon tracking instance: %s", config->device_id);
 
