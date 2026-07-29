@@ -491,6 +491,25 @@ config PIGEON_TOKEN
     override this per build (e.g. via a board/app Kconfig fragment) rather
     than committing a real token here.
 
+config PIGEON_TELEMETRY_MAX_KEYS
+  int "Max distinct telemetry keys pending between flushes"
+  default 8
+  range 1 64
+  help
+    Number of key/value slots in the batched pending-telemetry store
+    (pigeon_telemetry_set()). One pigeon_telemetry_flush() sends every
+    pending key in a single flat JSON report -- one HTTPS/CoAP POST or
+    one WS telemetry frame -- rather than one request per key, which is
+    what makes an N-key report cycle cost one radio round trip instead
+    of N. Setting an already-pending key overwrites its value in place
+    (latest-value-per-key, matching the backend's own store semantics);
+    setting a NEW key while every slot holds a distinct pending key
+    fails with -ENOMEM until a flush drains the store. Static RAM cost
+    scales linearly: ~160 bytes/slot for the store plus ~165 bytes/slot
+    for the shared flush body buffer (see PIGEON_TELEMETRY_BODY_MAX in
+    pigeon_internal.h) -- and the CoAP connector's frame buffers scale
+    with it too (see PIGEON_COAP_MSG_MAX in pigeon_coap.c).
+
 config PIGEON_LOG_LEVEL
   int "Pigeon Library Log Level"
   default 3

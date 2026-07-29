@@ -16,7 +16,18 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_COAP_PATH_MAX 128
 #define PIGEON_COAP_PORT_MAX 6
 #define PIGEON_COAP_QUERY_MAX 160
-#define PIGEON_COAP_MSG_MAX 640
+/* Request/response frame ceiling. The request side must fit a full batched
+ * telemetry body (built and sized by pigeon_core.c -- see
+ * PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h) plus CoAP framing: 384
+ * bytes of headroom comfortably covers the option caps above (Uri-Path
+ * segments up to PIGEON_COAP_PATH_MAX, the auth Uri-Query up to
+ * PIGEON_COAP_QUERY_MAX, Content-Format, payload marker, RFC 8323 length
+ * header). The 640 floor preserves the pre-batching response headroom for
+ * shadow GETs even when CONFIG_PIGEON_TELEMETRY_MAX_KEYS is configured
+ * tiny. Note pigeon_coap_exchange()'s request buffer lives on the caller's
+ * stack, so this scales that stack cost with
+ * CONFIG_PIGEON_TELEMETRY_MAX_KEYS (~1.7KB at the default 8). */
+#define PIGEON_COAP_MSG_MAX MAX(640, PIGEON_TELEMETRY_BODY_MAX + 384)
 #define PIGEON_COAP_CONFIG_MAX 256
 
 /* RFC 8323 sec 3.2 message framing: Token length is fixed at the RFC 7252
@@ -664,32 +675,22 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
-int pigeon_transport_report_shadow(const char *key, const char *val) {
-  /* Escaped forms can be up to ~6x the raw key/val in the worst case (every
-   * byte a control character needing \u00XX -- pigeon_json_escape()'s only
-   * unescaped-length guarantee is truncation, never overflow, but sizing
-   * for the true worst case avoids silently losing most of an otherwise-
-   * legitimate value). PIGEON_SHADOW_KEY_MAX=32/PIGEON_SHADOW_VAL_MAX=128
-   * in pigeon_core.c -- 32*6+1=193, 128*6+1=769, rounded up. Note this
-   * doesn't change PIGEON_COAP_MSG_MAX's own 640-byte frame ceiling below
-   * -- a pathological all-control-character value can still legitimately
-   * fail to fit a single CoAP frame, same bounded (non-overflowing)
-   * behavior as before, just via a different, already-safe failure path
-   * (coap_packet_append_payload()'s own bounds check) instead of silent
-   * mid-string truncation. */
-  char key_esc[200];
-  char val_esc[800];
+int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+  if (!body || !body_len) {
+    return -EINVAL;
+  }
 
-  pigeon_json_escape(key, key_esc, sizeof(key_esc));
-  pigeon_json_escape(val, val_esc, sizeof(val_esc));
-
-  char body[sizeof(key_esc) + sizeof(val_esc) + 8];
-
-  snprintk(body, sizeof(body), "{\"%s\":\"%s\"}", key_esc, val_esc);
-
+  /* body arrives pre-escaped and pre-framed (one flat JSON object of every
+   * pending key, at most PIGEON_TELEMETRY_BODY_MAX bytes) from
+   * pigeon_core.c's pigeon_telemetry_flush() -- the per-key
+   * pigeon_json_escape() scratch that used to live here moved there along
+   * with the body building. PIGEON_COAP_MSG_MAX is sized off
+   * PIGEON_TELEMETRY_BODY_MAX (see above) so a full batch always fits the
+   * frame; coap_packet_append_payload()'s own bounds check remains the
+   * safe (bounded, non-overflowing) failure path regardless. */
   uint8_t rsp_code;
   int err = pigeon_coap_exchange(
-      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, strlen(body), &rsp_code
+      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, &rsp_code
   );
 
   if (err) {

@@ -80,24 +80,83 @@ struct pigeon_shadow_update_request {
 int pigeon_init(const struct pigeon_config *config);
 
 /**
- * @brief Queue data or metrics to push to the digital twin edge instance
- * @param key The state key identifier
- * @param val The value payload string
+ * @brief Queue one telemetry key/value to report to the platform.
+ *
+ * Stages key=val in a CONFIG_PIGEON_TELEMETRY_MAX_KEYS-slot pending store,
+ * to be sent -- together with every other pending key -- by the next
+ * pigeon_telemetry_flush(). Latest-value-per-key: setting a key that is
+ * already pending overwrites its value in place, mirroring the backend's
+ * own latest-value-per-key telemetry store; distinct keys accumulate into
+ * one batched report instead of costing one request each.
+ *
+ * Not thread-safe: call this (and pigeon_telemetry_flush()) from a single
+ * application thread, the same implicit contract the old single-slot
+ * pigeon_set_shadow_param() store always had.
+ *
+ * @param key Telemetry key (at most 31 bytes).
+ * @param val Value payload string (at most 127 bytes).
+ * @return 0 on success; -EINVAL on NULL key/val; -ENODEV before
+ * pigeon_init(); -ENOSPC if key/val exceed the per-slot limits; -ENOMEM if
+ * every slot already holds a DIFFERENT pending key (flush, then retry --
+ * nothing is evicted to make room, deliberately, so no queued value is
+ * ever silently dropped).
+ */
+int pigeon_telemetry_set(const char *key, const char *val);
+
+/**
+ * @brief Send every pending telemetry key/value to the platform in one report.
+ *
+ * Builds ONE flat JSON object of all pending keys ({"k1":"v1","k2":"v2",...})
+ * and sends it as a single POST <CONFIG_PIGEON_ENDPOINT>/telemetry
+ * (device-authenticated with CONFIG_PIGEON_TOKEN) -- or, when CONFIG_PIGEON_WS
+ * is enabled and the socket is up, as a single WS telemetry frame carrying
+ * the same object as its metrics map, falling back to the HTTPS/CoAP
+ * transport when it isn't. Matches dovecote's report_telemetry_device
+ * (latest-value-per-key upsert of every key in the body, not a time-series
+ * log), and is what makes an N-key report cycle cost one radio round trip
+ * instead of N. Not the same endpoint as pigeon_shadow_report(), which acks
+ * shadow config, not arbitrary metrics.
+ *
+ * Clear-on-success, per report: keys carried by a successfully-sent report
+ * are cleared immediately; on a send failure, that report's keys (and any
+ * not yet attempted) all stay queued for the next flush. A pending value
+ * is therefore never silently lost, and a key is never re-sent after the
+ * report carrying it succeeded (unless set again). Caveat: over WS,
+ * "success" means the frame was written to the socket (telemetry-over-WS
+ * is fire-and-forget by design, see pigeon_ws_start()) -- unchanged from
+ * the single-key behavior.
+ *
+ * Normally the whole batch goes in exactly one report: the internal body
+ * buffer is sized so a full store of max-length values needing no JSON
+ * escaping always fits (see PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h).
+ * Pathologically escape-heavy values (raw control bytes escaping to \u00XX,
+ * up to 6x growth) may split one flush into consecutive reports, each with
+ * the same clear-on-success semantics -- never a truncated or invalid body.
+ *
+ * @return 0 on success (all pending keys sent and cleared), -ENODATA if
+ * nothing is queued, -ENODEV before pigeon_init(), negative error code on
+ * transport/auth failure (unsent keys kept queued).
+ */
+int pigeon_telemetry_flush(void);
+
+/**
+ * @brief Queue data or metrics to push to the digital twin edge instance.
+ *
+ * Backward-compatible alias for pigeon_telemetry_set() -- the historical
+ * name, from when the pending store was a single slot and telemetry rode
+ * the shadow vocabulary. Prefer pigeon_telemetry_set() in new code.
  */
 int pigeon_set_shadow_param(const char *key, const char *val);
 
 /**
- * @brief Flush the most recently queued pigeon_set_shadow_param() value to the platform.
+ * @brief Flush queued telemetry to the platform.
  *
- * Issues POST <CONFIG_PIGEON_ENDPOINT>/telemetry, body {"key": "val"}
- * (device-authenticated with CONFIG_PIGEON_TOKEN) -- a flat single key/value
- * report, matching dovecote's report_telemetry_device (latest-value-per-key
- * store, not a time-series log). Not the same endpoint as
- * pigeon_shadow_report(), which acks shadow config, not arbitrary metrics.
- * On failure the pending value is kept queued for the next flush.
- *
- * @return 0 on success, -ENODATA if nothing is queued, negative error code
- * on transport/auth failure.
+ * Backward-compatible alias for pigeon_telemetry_flush() -- see it for the
+ * batching and clear-on-success semantics. Note the behavior change from
+ * the single-slot era: with several distinct keys pending, this now sends
+ * ONE combined report rather than one request per key, and setting a
+ * second, different key before flushing no longer overwrites the first.
+ * Prefer pigeon_telemetry_flush() in new code.
  */
 int pigeon_shadow_flush(void);
 

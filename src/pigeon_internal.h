@@ -4,8 +4,44 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <zephyr/sys/util.h>
 
 #include <pigeon.h>
+
+/*
+ * Per-slot caps (buffer sizes, including the NUL) on one pending telemetry
+ * key/value in pigeon_core.c's batched store -- the same 32/128 limits the
+ * old single-slot PIGEON_SHADOW_KEY_MAX/PIGEON_SHADOW_VAL_MAX carried, moved
+ * here so the body-size math below (shared with the transports) can see them.
+ */
+#define PIGEON_TELEMETRY_KEY_MAX 32
+#define PIGEON_TELEMETRY_VAL_MAX 128
+
+/*
+ * Byte budget for one flat JSON telemetry body ({"k1":"v1","k2":"v2",...}),
+ * built by pigeon_core.c's flush and consumed whole by the transports
+ * (pigeon_coap.c sizes its frame buffers off it; pigeon_ws.c sizes its
+ * telemetry-frame wrapper off it; HTTPS streams from the caller's pointer
+ * and needs no matching buffer). Sized so a full batch of
+ * CONFIG_PIGEON_TELEMETRY_MAX_KEYS max-length key/values that need no JSON
+ * escaping always fits in ONE body -- the overwhelmingly normal case,
+ * telemetry being numbers/short strings -- with a floor guaranteeing even a
+ * single pathological worst-case slot (every byte escaping to \u00XX, 6x
+ * growth -- see pigeon_json_escape()) still fits an empty body, so no
+ * individual key/value can ever become permanently unflushable. A batch
+ * that IS escape-heavy simply splits across consecutive reports (see
+ * pigeon_telemetry_flush() in pigeon.h) rather than ever truncating.
+ *
+ * Per-slot arithmetic: "key":"value", = key + val + 7 syntax bytes (worst
+ * case, counting a separating comma); +3 covers the two braces and the NUL.
+ */
+#define PIGEON_TELEMETRY_SLOT_MAX \
+  ((PIGEON_TELEMETRY_KEY_MAX - 1) + (PIGEON_TELEMETRY_VAL_MAX - 1) + 7)
+#define PIGEON_TELEMETRY_ESC_SLOT_MAX \
+  (6 * (PIGEON_TELEMETRY_KEY_MAX - 1) + 6 * (PIGEON_TELEMETRY_VAL_MAX - 1) + 7)
+#define PIGEON_TELEMETRY_BODY_MAX                                       \
+  MAX(CONFIG_PIGEON_TELEMETRY_MAX_KEYS * PIGEON_TELEMETRY_SLOT_MAX + 3, \
+      PIGEON_TELEMETRY_ESC_SLOT_MAX + 3)
 
 /*
  * Populated by pigeon_init() from config->connector.coap. Both fields stay
@@ -30,18 +66,21 @@ size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
 /*
  * Implemented by whichever transport module is compiled in (pigeon_https.c
  * or pigeon_coap.c -- see CMakeLists.txt's zephyr_library_sources_ifdef, only
- * one is ever built). Sends a single telemetry key/val to the platform:
- * POST <endpoint>/telemetry, body {"key": "val"}, matching dovecote's
- * report_telemetry_device (see pigeon_shadow_flush() in pigeon.h).
+ * one is ever built). Sends one already-built flat JSON telemetry object
+ * (every pending key/value, escaped and framed by pigeon_core.c's
+ * pigeon_telemetry_flush() -- at most PIGEON_TELEMETRY_BODY_MAX bytes
+ * including the NUL) to the platform: POST <endpoint>/telemetry, matching
+ * dovecote's report_telemetry_device (latest-value-per-key upsert of every
+ * key in the body).
  */
-int pigeon_transport_report_shadow(const char *key, const char *val);
+int pigeon_transport_report_telemetry(const char *body, size_t body_len);
 
 /*
  * Implemented only by pigeon_https.c (see zephyr/Kconfig: CONFIG_PIGEON_LOG_UPLOAD
  * depends on CONFIG_PIGEON_CONNECTOR_HTTPS -- CoAP has no equivalent transport
  * for this yet). POSTs a raw binary chunk of accumulated Zephyr dictionary-mode
  * log records to <endpoint>/logs, device-authenticated the same way as
- * pigeon_transport_report_shadow() above. Called only from
+ * pigeon_transport_report_telemetry() above. Called only from
  * pigeon_log_backend.c's flush work handler, never from application code.
  */
 int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
@@ -79,17 +118,19 @@ int pigeon_transport_download_firmware(
 
 #if defined(CONFIG_PIGEON_WS)
 /*
- * Implemented only by pigeon_ws.c. Sends {"type":"telemetry","metrics":
- * {"<key-esc>":"<val-esc>"}} over the open WS socket. Returns 0 on send
- * success, -ENOTCONN when the socket is down (caller falls back to the
- * HTTPS transport hook, pigeon_transport_report_shadow() above). This is
+ * Implemented only by pigeon_ws.c. Wraps an already-built flat JSON metrics
+ * object (same body pigeon_transport_report_telemetry() above takes, built
+ * by pigeon_core.c's flush) as {"type":"telemetry","metrics":<metrics>} and
+ * sends it as ONE frame over the open WS socket. Returns 0 on send success,
+ * -ENOTCONN when the socket is down (caller falls back to the HTTPS
+ * transport hook, pigeon_transport_report_telemetry() above). This is
  * fire-and-forget: the server sends no ack and swallows internal failures
  * silently -- acceptable for latest-value-per-key telemetry, NOT
  * acceptable for shadow_report, which therefore stays on HTTPS where an
- * HTTP status confirms persistence (see pigeon_shadow_flush() in
+ * HTTP status confirms persistence (see pigeon_telemetry_flush() in
  * pigeon_core.c for the fallback wiring).
  */
-int pigeon_ws_report_telemetry(const char *key, const char *val);
+int pigeon_ws_report_telemetry(const char *metrics, size_t metrics_len);
 #endif /* CONFIG_PIGEON_WS */
 
 #if defined(CONFIG_PIGEON_SHELL)

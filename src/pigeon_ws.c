@@ -560,29 +560,40 @@ static int pigeon_ws_send_text(const char *payload, size_t len, bool is_from_wor
   return ret < 0 ? -ENOTCONN : 0;
 }
 
-int pigeon_ws_report_telemetry(const char *key, const char *val) {
-  if (!key || !val) {
+/* Static, not stack: sized off PIGEON_TELEMETRY_BODY_MAX (~1.3KB at the
+ * default CONFIG_PIGEON_TELEMETRY_MAX_KEYS=8), too big to drop on an
+ * arbitrary caller's stack. Single-owner without a lock of its own:
+ * only pigeon_telemetry_flush() (single-app-thread by contract, see
+ * pigeon.h) ever reaches pigeon_ws_report_telemetry() -- same
+ * single-owner-thread reasoning as pigeon_ws_scratch/pigeon_ws_rx_buf
+ * above. The framed result stays comfortably under the server's 16 KiB
+ * MAX_WS_FRAME_BYTES cap (the body would need
+ * CONFIG_PIGEON_TELEMETRY_MAX_KEYS near its range max to even approach it). */
+static char pigeon_ws_telemetry_frame[PIGEON_TELEMETRY_BODY_MAX + 32];
+
+int pigeon_ws_report_telemetry(const char *metrics, size_t metrics_len) {
+  if (!metrics || !metrics_len) {
     return -EINVAL;
   }
 
-  /* Escaped forms can be up to ~6x the raw key/val in the worst case (every
-   * byte a control character needing \u00XX) -- same sizing as the HTTPS/
-   * CoAP transports' telemetry encode, see their comments for the
-   * PIGEON_SHADOW_KEY_MAX/VAL_MAX arithmetic. The resulting body stays
-   * comfortably under the server's 16 KiB per-frame cap either way. */
-  char key_esc[200];
-  char val_esc[800];
-
-  pigeon_json_escape(key, key_esc, sizeof(key_esc));
-  pigeon_json_escape(val, val_esc, sizeof(val_esc));
-
-  char body[sizeof(key_esc) + sizeof(val_esc) + 48];
-
-  snprintk(
-      body, sizeof(body), "{\"type\":\"telemetry\",\"metrics\":{\"%s\":\"%s\"}}", key_esc, val_esc
+  /* metrics arrives pre-escaped and pre-framed (one flat JSON object of
+   * every pending key, built by pigeon_core.c's flush) -- this just wraps
+   * it as the telemetry frame's metrics map. */
+  int len = snprintk(
+      pigeon_ws_telemetry_frame, sizeof(pigeon_ws_telemetry_frame),
+      "{\"type\":\"telemetry\",\"metrics\":%s}", metrics
   );
 
-  return pigeon_ws_send_text(body, strlen(body), false);
+  if (len < 0 || (size_t)len >= sizeof(pigeon_ws_telemetry_frame)) {
+    /* Unreachable while this buffer stays sized off PIGEON_TELEMETRY_BODY_MAX
+     * (the cap pigeon_core.c builds against) -- defensive against a sizing
+     * regression, and deliberately not -ENOTCONN so no caller mistakes an
+     * oversized frame for a down socket. */
+    LOG_ERR("WS: telemetry frame build overflowed (len=%d)", len);
+    return -EMSGSIZE;
+  }
+
+  return pigeon_ws_send_text(pigeon_ws_telemetry_frame, (size_t)len, false);
 }
 
 #if defined(CONFIG_PIGEON_SHELL)

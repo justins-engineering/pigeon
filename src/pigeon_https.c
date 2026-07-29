@@ -273,7 +273,11 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
-int pigeon_transport_report_shadow(const char *key, const char *val) {
+int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+  if (!body || !body_len) {
+    return -EINVAL;
+  }
+
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -295,25 +299,14 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
   snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
   const char *headers[] = {auth_header, NULL};
 
-  /* Escaped forms can be up to ~6x the raw key/val in the worst case (every
-   * byte a control character needing \u00XX -- pigeon_json_escape()'s only
-   * unescaped-length guarantee is truncation, never overflow, but sizing
-   * for the true worst case avoids silently losing most of an otherwise-
-   * legitimate value). PIGEON_SHADOW_KEY_MAX=32/PIGEON_SHADOW_VAL_MAX=128
-   * in pigeon_core.c -- 32*6+1=193, 128*6+1=769, rounded up. */
-  char key_esc[200];
-  char val_esc[800];
-
-  pigeon_json_escape(key, key_esc, sizeof(key_esc));
-  pigeon_json_escape(val, val_esc, sizeof(val_esc));
-
-  char body[sizeof(key_esc) + sizeof(val_esc) + 8];
-
-  snprintk(body, sizeof(body), "{\"%s\":\"%s\"}", key_esc, val_esc);
-
   pigeon_https_body_len = 0;
   pigeon_https_body[0] = '\0';
 
+  /* body arrives pre-escaped and pre-framed (one flat JSON object of every
+   * pending key) from pigeon_core.c's pigeon_telemetry_flush() -- this
+   * transport just moves the bytes, same as pigeon_transport_upload_logs()
+   * below. The per-key pigeon_json_escape() scratch that used to live here
+   * moved to pigeon_core.c along with the body building. */
   struct http_request req = {
       .method = HTTP_POST,
       .url = url,
@@ -322,7 +315,7 @@ int pigeon_transport_report_shadow(const char *key, const char *val) {
       .header_fields = headers,
       .content_type_value = "application/json",
       .payload = body,
-      .payload_len = strlen(body),
+      .payload_len = body_len,
       .response = pigeon_https_response_cb,
       .recv_buf = pigeon_https_recv_buf,
       .recv_buf_len = sizeof(pigeon_https_recv_buf),
@@ -435,9 +428,8 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
   snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
   const char *headers[] = {auth_header, NULL};
 
-  /* current_config is embedded verbatim as a raw JSON object -- unlike
-   * pigeon_transport_report_shadow()'s key/val, this is not a string value
-   * so it must not be quote-escaped, only trusted to already be valid JSON
+  /* current_config is embedded verbatim as a raw JSON object -- not a
+   * string value, so it must not be quote-escaped, only trusted to already be valid JSON
    * (the caller's responsibility, see pigeon_shadow_doc's docs). The margin
    * covers the fixed JSON framing plus an 11-char int32 (49 bytes). */
   char body[PIGEON_HTTPS_CONFIG_MAX + 64];
