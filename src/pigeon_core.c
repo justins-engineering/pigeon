@@ -3,6 +3,10 @@
 #include <stdbool.h>
 #include <string.h>
 #include <zephyr/logging/log.h>
+/* snprintk: must be included explicitly -- logging/log.h only provides it
+ * transitively when CONFIG_LOG=y, and this module also builds into log-free
+ * images (e.g. a release MCUboot config under sysbuild). */
+#include <zephyr/sys/printk.h>
 
 #include "pigeon_internal.h"
 
