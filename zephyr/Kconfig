@@ -58,6 +58,30 @@ config PIGEON_HTTPS_SEC_TAG
     provisioned its cert(s) under -- this library does not provision
     anything itself, only opens sockets against this tag.
 
+config PIGEON_HTTPS_NATIVE_TLS
+  bool "Run TLS natively (mbedTLS) over an offloaded transport socket"
+  default n
+  help
+    Adds SOCK_NATIVE_TLS to the connector's socket type, so TLS runs in
+    Zephyr's own mbedTLS stack over an offloaded (e.g. nRF91 modem) TCP
+    socket instead of inside the modem. Required on boards that keep
+    CONFIG_MODEM_KEY_MGMT off and provision their CA certs with
+    tls_credential_add() into Zephyr's native credential store: without
+    this flag, an offloaded-socket build routes IPPROTO_TLS_1_2 straight
+    to the modem's own TLS (see nrf9x_socket_create() in
+    nrf/lib/nrf_modem_lib/nrf9x_sockets.c), which looks up
+    CONFIG_PIGEON_HTTPS_SEC_TAG in the MODEM's credential store -- empty
+    on such boards, so every handshake fails even though the same tag
+    works fine for the app's own SOCK_NATIVE_TLS sockets. SOCK_NATIVE_TLS
+    is an nRF Connect SDK extension (zephyr/include/zephyr/net/
+    socket_ncs.h in the NCS Zephyr fork), so this option is only
+    meaningful -- and only compiles -- under an NCS workspace; leave it
+    off (the default) everywhere else, including on offloaded-socket
+    boards that DO provision the modem store via modem_key_mgmt (the
+    hardware-verified https_init configuration). Applies to every HTTPS
+    connector socket: shadow, telemetry, log upload, and FOTA downloads.
+    CONFIG_PIGEON_WS opens its own sockets and does not honor this yet.
+
 endif # PIGEON_CONNECTOR_HTTPS
 
 config PIGEON_LOG_UPLOAD

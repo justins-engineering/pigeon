@@ -126,7 +126,16 @@ static int pigeon_https_connect(void) {
     return -EHOSTUNREACH;
   }
 
-  int sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
+  /* SOCK_NATIVE_TLS (NCS-only, see CONFIG_PIGEON_HTTPS_NATIVE_TLS's help):
+   * TLS in Zephyr's own mbedTLS over an offloaded TCP socket, for boards
+   * whose CA cert lives in the native credential store, not the modem's. */
+  int sock_type = SOCK_STREAM;
+
+#if defined(CONFIG_PIGEON_HTTPS_NATIVE_TLS)
+  sock_type |= SOCK_NATIVE_TLS;
+#endif
+
+  int sock = zsock_socket(res->ai_family, sock_type, IPPROTO_TLS_1_2);
 
   if (sock < 0) {
     LOG_ERR("Failed to create TLS socket: %d", -errno);
