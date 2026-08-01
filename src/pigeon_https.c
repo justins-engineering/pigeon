@@ -13,13 +13,20 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 #define PIGEON_HTTPS_HOST_MAX 128
 #define PIGEON_HTTPS_PATH_MAX 128
-/* Bumped from 640/256 (both with headroom to spare) when the shadow's
- * target_config/current_config picked up the "firmware" key (see
- * CONFIG_PIGEON_FOTA, pigeon.h's pigeon_fota_info): a version string +
- * size + 64-char sha256 hex adds roughly 120-140 raw bytes per config on
- * top of whatever app-level keys (log/telemetry_interval/reboot) were
- * already there. */
-#define PIGEON_HTTPS_RECV_BUF_LEN 768
+/* Sizes both the HTTP parser scratch buffer and the accumulated-body buffer
+ * below off CONFIG_PIGEON_SHADOW_CONFIG_MAX (via PIGEON_HTTPS_CONFIG_MAX,
+ * pigeon_internal.h), since a shadow GET body is by far the largest thing
+ * either ever holds: two configs -- each up to CONFIG_MAX raw, and carried
+ * on the wire as an escaped JSON string, where the dashboard-authored
+ * quote/backslash density observed in real configs stays well under the
+ * +25% growth budgeted here -- plus ~110 bytes of version/timestamp/key
+ * framing, rounded up to 128. (History: a fixed 768 -- itself bumped from
+ * 640/256 when the "firmware" key landed -- which this formula reproduces
+ * within rounding at the 320-byte default: 2*400 + 128 = 928, replacing a
+ * value that had NO escape headroom at all and sat one quote-dense config
+ * away from silent truncation.) */
+#define PIGEON_HTTPS_RECV_BUF_LEN \
+  (2 * (PIGEON_HTTPS_CONFIG_MAX + PIGEON_HTTPS_CONFIG_MAX / 4) + 128)
 /* PIGEON_HTTPS_CONFIG_MAX itself now lives in pigeon_internal.h -- pigeon_ws.c's
  * shadow_update frame decode (see zephyr/Kconfig: CONFIG_PIGEON_WS) shares the
  * same cap on target_config/current_config, so one file owns the definition. */

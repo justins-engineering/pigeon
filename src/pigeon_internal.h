@@ -109,12 +109,15 @@ int pigeon_transport_download_firmware(
  * byte length. Originated in pigeon_https.c (see its history for the
  * 640/256 -> 320 bump when the "firmware" shadow key landed); moved here so
  * pigeon_ws.c's shadow_update frame decode (CONFIG_PIGEON_WS, below) can
- * share the exact same cap rather than drifting its own. pigeon_coap.c
- * intentionally keeps its own separate, smaller PIGEON_COAP_CONFIG_MAX --
- * CoAP has no WS counterpart and unifying the two isn't part of this reuse
- * rule.
+ * share the exact same cap rather than drifting its own. Now sourced from
+ * CONFIG_PIGEON_SHADOW_CONFIG_MAX (default 320, the historical value) so an
+ * app whose target_config outgrows it -- e.g. the departure board's
+ * runtime-tunable NTP/retry/interval keys plus a firmware target -- can
+ * raise it without patching this header. pigeon_coap.c intentionally keeps
+ * its own separate, smaller PIGEON_COAP_CONFIG_MAX -- CoAP has no WS
+ * counterpart and unifying the two isn't part of this reuse rule.
  */
-#define PIGEON_HTTPS_CONFIG_MAX 320
+#define PIGEON_HTTPS_CONFIG_MAX CONFIG_PIGEON_SHADOW_CONFIG_MAX
 
 #if defined(CONFIG_PIGEON_WS)
 /*

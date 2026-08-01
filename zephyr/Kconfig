@@ -84,6 +84,25 @@ config PIGEON_HTTPS_NATIVE_TLS
 
 endif # PIGEON_CONNECTOR_HTTPS
 
+config PIGEON_SHADOW_CONFIG_MAX
+  int "Max shadow target_config/current_config size (bytes, incl. NUL)"
+  default 320
+  range 64 4096
+  help
+    Cap on one decoded shadow config's raw JSON text, shared by the HTTPS
+    connector's shadow GET decode, pigeon_shadow_report()'s body framing,
+    and (CONFIG_PIGEON_WS) the shadow_update frame decode. The default is
+    the historical built-in value, sized for a target_config of a few
+    short app keys plus a "firmware" FOTA target. Raise it when the app's
+    target_config grows past that (a truncated config fails JSON parsing
+    downstream, it doesn't degrade gracefully). Static RAM cost scales
+    with it: the HTTPS connector keeps two receive/accumulate buffers
+    sized ~2.5x this value each (see PIGEON_HTTPS_RECV_BUF_LEN in
+    pigeon_https.c for the arithmetic), plus per-call stack framing of
+    about 1x. CONFIG_PIGEON_WS users raising this should check
+    CONFIG_PIGEON_WS_RX_BUF_SIZE still covers a full shadow_update frame
+    (two escaped configs plus framing).
+
 config PIGEON_LOG_UPLOAD
   bool "Remote log upload (Zephyr dictionary-based logging)"
   default n
