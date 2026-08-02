@@ -7,6 +7,7 @@
 #include <psa/crypto.h>
 #include <string.h>
 #include <zephyr/dfu/flash_img.h>
+#include <zephyr/kernel.h>
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>
@@ -234,6 +235,14 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
 
     offset += got;
     LOG_INF("FOTA: downloaded %zu/%zu bytes", offset, total_size);
+
+#if CONFIG_PIGEON_FOTA_CHUNK_YIELD_MS > 0
+    /* Give the rest of the system periodic airtime -- see this option's
+     * Kconfig help for the starvation this prevents on narrow links. */
+    if (offset < total_size) {
+      k_sleep(K_MSEC(CONFIG_PIGEON_FOTA_CHUNK_YIELD_MS));
+    }
+#endif
   }
 
   if (failed) {

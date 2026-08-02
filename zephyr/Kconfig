@@ -224,6 +224,22 @@ config PIGEON_FOTA_CHUNK_SIZE
     pigeon_fota.c) -- the full image is never buffered whole in RAM,
     only this window of it.
 
+config PIGEON_FOTA_CHUNK_YIELD_MS
+  int "Pause between FOTA chunk downloads (ms)"
+  default 0
+  range 0 1000
+  help
+    Sleep this long between consecutive Range-GET chunk requests during
+    pigeon_fota_apply(). 0 (the default, the historical behavior) fetches
+    chunks back to back, which on a narrow link (LTE-M) can saturate the
+    modem's downlink and DNS/socket capacity so thoroughly that the
+    application's own concurrent traffic starves -- observed live on an
+    nRF9160 departure sign (2026-08-02), where the app's 30s fetch cycle
+    failed repeatedly for the whole download. A modest yield (tens of ms)
+    opens periodic airtime windows for the rest of the system at a small
+    cost in total download time (chunks x yield). Tune per-fleet; the
+    right value depends on link bandwidth and how chatty the app is.
+
 config PIGEON_FOTA_CURRENT_VERSION
   string "Currently running firmware version string"
   help
