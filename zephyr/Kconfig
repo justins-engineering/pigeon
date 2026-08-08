@@ -213,6 +213,51 @@ config PIGEON_FOTA_NCS
     DFU_TARGET/DFU_TARGET_MCUBOOT are defined by the nrf module, not
     plain Zephyr.
 
+config PIGEON_FOTA_RESUME
+  bool "Persist FOTA download progress across attempts and reboots"
+  default n
+  depends on SETTINGS
+  depends on !SETTINGS_NONE
+  select STREAM_FLASH_PROGRESS if !PIGEON_FOTA_NCS
+  select DFU_TARGET_STREAM_SAVE_PROGRESS if PIGEON_FOTA_NCS
+  help
+    Without this option, any failed or interrupted pigeon_fota_apply()
+    restarts from byte 0 -- observed live on an LTE-M departure sign
+    (2026-08-02) where a download that died at 72% of a ~486KB image
+    threw away ~45 minutes of Range-GET progress, on a link that itself
+    degrades under sustained traffic. With it, the number of bytes
+    confirmed FLUSHED to the MCUboot secondary slot is persisted (via the
+    settings subsystem, alongside the flash-write backend's own persisted
+    stream progress) after every chunk, and the next pigeon_fota_apply()
+    call -- same boot or after a reboot -- re-hashes the already-flushed
+    slot bytes to rebuild the streamed sha256 (seconds of flash reads;
+    no crypto context is ever serialized) and re-requests the remainder
+    via HTTP Range from where the flash actually stopped, never from a
+    bytes-received offset whose RAM-buffered tail a reboot would have
+    discarded.
+
+    Persisted progress is invalidated (next download starts clean from
+    byte 0) whenever the shadow's firmware target version changes,
+    whenever the completion sha256 verify fails (a resumed-but-corrupt
+    image must not poison the following attempt), and whenever the
+    backend's restored offset can't belong to the current target (e.g.
+    it exceeds the declared image size, or no record vouches for it).
+
+    ATTEMPT SEMANTICS ARE UNCHANGED: one pigeon_fota_apply() call is
+    still one attempt from the caller's perspective (e.g. a persisted
+    attempts-per-version cap in the app counts a resumed continuation as
+    a new -- merely much cheaper -- attempt).
+
+    Requires the application to provide a working settings backend
+    (CONFIG_SETTINGS plus e.g. CONFIG_NVS and a storage partition); this
+    library only reads/writes its own "pigeon/fota" settings keys. On the
+    CONFIG_PIGEON_FOTA_NCS backend this also enables NCS's own
+    CONFIG_DFU_TARGET_STREAM_SAVE_PROGRESS, whose default flips
+    CONFIG_DFU_TARGET_STREAM_SYNCHRONOUS on -- every chunk is then
+    flushed to flash before the next Range GET is issued, which is
+    exactly the granularity resume wants. Off by default: existing
+    builds see zero behavior change.
+
 config PIGEON_FOTA_CHUNK_SIZE
   int "FOTA download chunk size (bytes)"
   default 2048

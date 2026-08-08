@@ -77,6 +77,16 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   reverts back to the previous slot on the *next* reset, so a bad update
   self-heals without any server-side intervention.
 
+`CONFIG_PIGEON_FOTA_RESUME` (off by default) makes a failed or interrupted
+`pigeon_fota_apply()` resumable, across retries **and reboots**: the bytes
+already flushed to the secondary slot are re-hashed from flash on the next
+call and only the remainder is Range-requested — instead of every attempt
+restarting from byte 0. Requires the app to provide a settings backend
+(`CONFIG_SETTINGS` + e.g. `CONFIG_NVS`); see the option's Kconfig help for
+the invalidation rules (version change, failed verify, untrusted state).
+The reconcile/persistence logic has a native_sim unit suite under
+`tests/fota_resume` (build/run instructions in its `src/main.c` header).
+
 **Signing key:** MCUboot's own image signature check (`sysbuild.conf`:
 `SB_CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y`) is the actual security
 boundary for firmware authenticity — `pigeon_fota_apply()`'s sha256 check
