@@ -213,10 +213,8 @@ static int pigeon_coap_tcp_build_request(
 /* RFC 8323 sec 5.3: each side MUST send a CSM as its first message on the
  * connection. An empty CSM (no options) advertises the spec defaults
  * (Max-Message-Size 1152, no block-wise), which matches this transport's
- * one-frame-per-exchange usage. Never surfaced against dovecote (which has
- * no CoAP listener yet), but a real RFC 8323 peer -- libcoap's coap-server,
- * this connector's conformance target -- both sends its own CSM (which
- * pigeon_coap_tcp_read_message() below skips) and expects ours. */
+ * one-frame-per-exchange usage. The peer's own CSM is skipped by
+ * pigeon_coap_tcp_read_message() below. */
 static int pigeon_coap_tcp_send_csm(int sock) {
   const uint8_t csm[2] = {0x00, PIGEON_COAP_TCP_CODE_CSM};
   ssize_t sent = zsock_send(sock, csm, sizeof(csm), 0);

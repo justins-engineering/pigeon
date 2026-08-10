@@ -108,8 +108,7 @@ static int pigeon_coap_udp_connect(void) {
 #endif
 
   /* SNI/hostname verification is an X.509 concept and meaningless for PSK
-   * ciphersuites -- same reasoning (and same actual-build-failure
-   * provenance) as the TCP transport's connect path. */
+   * ciphersuites -- same reasoning as the TCP transport's connect path. */
   const struct pigeon_coap_config *coap_cfg = pigeon_active_coap_config();
   bool using_psk = coap_cfg->tls_psk_identity && coap_cfg->tls_psk_secret;
 
@@ -137,11 +136,10 @@ static int pigeon_coap_udp_connect(void) {
    * is observable per connection instead of assumed. UPLINK means the
    * server gave us a CID to echo -- the state that survives a rebind.
    * Caveat on native-stack builds: Zephyr's status getsockopt reads
-   * uninitialized stack when the server did NOT negotiate CID, so a
-   * positive answer here can be spurious there (upstream bug, draft
-   * report in pigeon-examples' docs/upstream-issues/) -- a rebind
-   * surviving without re-handshake is the authoritative signal. The nRF91
-   * modem implements the status option itself and is unaffected. */
+   * uninitialized memory when the server did NOT negotiate CID, so a
+   * positive answer here can be spurious -- a rebind surviving without a
+   * re-handshake is the authoritative signal. The nRF91 modem implements
+   * the status option itself and is unaffected. */
   int cid_status = TLS_DTLS_CID_STATUS_DISABLED;
   socklen_t cid_status_len = sizeof(cid_status);
 

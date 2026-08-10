@@ -116,13 +116,21 @@ int pigeon_init(const struct pigeon_config* config) {
   /* CONFIG_PIGEON_ENDPOINT/_TOKEN live outside "if PIGEON" in Kconfig (see
    * its comment) so pigeon_core.c -- compiled unconditionally regardless of
    * CONFIG_PIGEON -- always has a value to read. That means this guard must
-   * itself be gated on a connector actually being selected: a sample that
-   * leaves CONFIG_PIGEON off entirely (e.g. shadow_model, which only wants
-   * pigeon_init()'s bookkeeping and the shadow structs, no transport) gets
-   * empty-string defaults for both, and used to hard-fail here even though
-   * it never asked for a transport at all. */
-  if (!*CONFIG_PIGEON_ENDPOINT || !*CONFIG_PIGEON_TOKEN) {
-    LOG_ERR("CONFIG_PIGEON_ENDPOINT and CONFIG_PIGEON_TOKEN must be set");
+   * itself be gated on a connector actually being selected: a build that
+   * leaves CONFIG_PIGEON off entirely (wanting only pigeon_init()'s
+   * bookkeeping and the shadow structs, no transport) gets empty-string
+   * defaults and must not hard-fail here. */
+  if (!*CONFIG_PIGEON_ENDPOINT) {
+    LOG_ERR("CONFIG_PIGEON_ENDPOINT must be set");
+    return -EINVAL;
+  }
+#endif
+
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+  /* The bearer token only rides HTTPS requests; the CoAP connector
+   * authenticates through its PSK handshake instead and never reads it. */
+  if (!*CONFIG_PIGEON_TOKEN) {
+    LOG_ERR("CONFIG_PIGEON_TOKEN must be set");
     return -EINVAL;
   }
 #endif

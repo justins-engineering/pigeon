@@ -38,12 +38,12 @@ static bool pigeon_coap_psk_registered;
  * capsules::PigeonShadow; see pigeon_shadow_doc in pigeon.h and the matching
  * copy of this in pigeon_https.c). target_config/current_config are
  * themselves JSON objects serialized as a string on the wire (e.g.
- * "target_config":"{\"log\":true}") -- decoding them with JSON_TOK_STRING
- * (as this used to) hands back a raw, still-escaped pointer into the
- * response buffer: '{\"log\":true}' is not valid JSON, so the app's own
- * json_obj_parse() on target_config always failed downstream regardless of
- * which keys/values it held. JSON_TOK_STRING_BUF actually unescapes into a
- * fixed-size buffer instead, so these are plain arrays (not pointers) and
+ * "target_config":"{\"log\":true}") -- JSON_TOK_STRING would hand back a
+ * raw, still-escaped pointer into the response buffer ('{\"log\":true}' is
+ * not valid JSON, so the app's own json_obj_parse() on target_config would
+ * fail downstream regardless of which keys/values it held).
+ * JSON_TOK_STRING_BUF actually unescapes into a fixed-size buffer
+ * instead, so these are plain arrays (not pointers) and
  * this whole struct is a static instance (not a local), decoded into
  * directly -- pigeon_shadow_doc's target_config/current_config pointers
  * (see pigeon_shadow_get() below) alias straight into it, which is what
@@ -142,23 +142,16 @@ int pigeon_coap_parse_endpoint(void) {
 }
 
 #if defined(CONFIG_MODEM_KEY_MGMT)
-/* On nRF91-class boards TLS/DTLS runs inside the modem, which looks
- * credentials up in its OWN store (%CMNG) -- tls_credential_add() into
- * Zephyr's native store is invisible to it, which is exactly the
- * long-documented coap_tcp_init known gap (its board conf's NOTE about
- * real-hardware PSK auth never working). modem_key_mgmt_write() reaches
- * the real store, but only while the modem is offline (CFUN=0/4) -- so on
- * these builds pigeon_init() provisions eagerly (see pigeon_core.c) and
- * the app must call pigeon_init() BEFORE bringing LTE up, the reverse of
- * the historical CoAP sample ordering (see coap_dtls_init's main.c in
- * pigeon-examples). The modem's PSK slot (%CMNG type 4) wants the secret
- * as ASCII hex, not raw bytes. */
+/* On nRF91-class boards TLS/DTLS runs inside the modem, which resolves
+ * sec_tags against its OWN credential store (%CMNG) -- tls_credential_add()
+ * into Zephyr's native store is invisible to it. modem_key_mgmt_write()
+ * reaches the real store, but only while the modem is offline (CFUN=0/4),
+ * so provisioning runs eagerly from pigeon_init() and the app must call
+ * pigeon_init() BEFORE bringing LTE up. The modem's PSK slot (%CMNG type
+ * 4) wants the secret as ASCII hex, not raw bytes. */
 static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
   static const char hex_digits[] = "0123456789abcdef";
-  /* Hex-encoding doubles the secret; size the scratch off the Uri-Query
-   * cap, which already bounds how long a usable device credential can
-   * get on this connector. */
-  char psk_hex[PIGEON_COAP_QUERY_MAX * 2];
+  char psk_hex[PIGEON_COAP_PSK_MAX * 2 + 1];
   size_t secret_len = strlen(cfg->tls_psk_secret);
 
   if (secret_len * 2 >= sizeof(psk_hex)) {
@@ -267,7 +260,7 @@ int pigeon_coap_register_psk(void) {
  *
  * Splits path by hand (rather than strtok_r) since strtok_r isn't visible
  * under this project's -std=c17 build without libc-specific feature-test
- * macros -- confirmed by an actual build failure on native_sim's host libc. */
+ * macros. */
 static int pigeon_coap_append_uri_path(
     struct coap_packet *cpkt, const char *path, const char *leaf
 ) {
@@ -322,19 +315,11 @@ int pigeon_coap_append_request_options(
     return err;
   }
 
-  if (has_payload) {
-    err = coap_append_option_int(cpkt, COAP_OPTION_CONTENT_FORMAT, COAP_CONTENT_FORMAT_APP_JSON);
-    if (err) {
-      return err;
-    }
+  if (!has_payload) {
+    return 0;
   }
 
-  char query[PIGEON_COAP_QUERY_MAX];
-
-  snprintk(query, sizeof(query), "auth=%s", CONFIG_PIGEON_TOKEN);
-  return coap_packet_append_option(
-      cpkt, COAP_OPTION_URI_QUERY, (const uint8_t *)query, strlen(query)
-  );
+  return coap_append_option_int(cpkt, COAP_OPTION_CONTENT_FORMAT, COAP_CONTENT_FORMAT_APP_JSON);
 }
 
 int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
@@ -390,12 +375,10 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
 
   /* body arrives pre-escaped and pre-framed (one flat JSON object of every
    * pending key, at most PIGEON_TELEMETRY_BODY_MAX bytes) from
-   * pigeon_core.c's pigeon_telemetry_flush() -- the per-key
-   * pigeon_json_escape() scratch that used to live here moved there along
-   * with the body building. PIGEON_COAP_MSG_MAX is sized off
-   * PIGEON_TELEMETRY_BODY_MAX (see pigeon_coap_internal.h) so a full batch
-   * always fits the frame; coap_packet_append_payload()'s own bounds check
-   * remains the safe (bounded, non-overflowing) failure path regardless. */
+   * pigeon_core.c's pigeon_telemetry_flush(). PIGEON_COAP_MSG_MAX is sized
+   * off PIGEON_TELEMETRY_BODY_MAX (see pigeon_coap_internal.h) so a full
+   * batch always fits the frame; coap_packet_append_payload()'s own bounds
+   * check remains the safe failure path regardless. */
   uint8_t rsp_code;
   const uint8_t *payload;
   size_t payload_len;

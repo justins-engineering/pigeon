@@ -31,15 +31,18 @@ enum pigeon_connector_type {
  * CoAP-over-DTLS/UDP (RFC 7252, coaps://, CONFIG_PIGEON_COAP_TRANSPORT_UDP,
  * the primary choice for constrained battery/cellular devices) or
  * CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://,
- * CONFIG_PIGEON_COAP_TRANSPORT_TCP). Field names match
- * capsules::CoapConfig's tls_psk_identity/tls_psk_secret; the same pair
- * feeds whichever transport is compiled in (registered natively via
- * tls_credential_add(), or -- CONFIG_MODEM_KEY_MGMT builds -- written into
- * the nRF91 modem's own credential store, where the TLS/DTLS stack actually
- * lives on those boards). NULL when absent (Option<String>::None).
- * Note dovecote still has no CoAP listener deployed (the terminator is a
- * tracked roadmap item) -- protocol conformance is currently verified
- * against libcoap instead.
+ * CONFIG_PIGEON_COAP_TRANSPORT_TCP). The handshake these complete is the
+ * device's ENTIRE authentication on CoAP: the platform maps the PSK
+ * identity (the pigeon's id) to the pigeon and holds the bearer token
+ * server-side, so no credential ever rides inside a CoAP message. Field
+ * names match capsules::CoapConfig's tls_psk_identity/tls_psk_secret --
+ * identity is the pigeon id, secret the short key minted alongside the
+ * bearer token (deliberately not the token itself: RFC 4279 only obliges
+ * TLS stacks to accept PSKs up to 64 bytes). The same pair feeds whichever
+ * transport is compiled in, registered natively via tls_credential_add()
+ * or -- CONFIG_MODEM_KEY_MGMT builds -- written into the nRF91 modem's own
+ * credential store, where the TLS/DTLS stack actually lives on those
+ * boards. NULL when absent (Option<String>::None).
  */
 struct pigeon_coap_config {
   const char *tls_psk_identity;
