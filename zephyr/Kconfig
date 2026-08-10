@@ -17,9 +17,11 @@ config PIGEON_CONNECTOR_COAP
   select JSON_LIBRARY
   help
     Serialize device shadow deltas into minimal byte blocks optimized for
-    constrained cellular paths. Speaks CoAP-over-TLS/TCP (RFC 8323,
-    coaps+tcp://) rather than the usual CoAP-over-DTLS/UDP -- this device
-    stack has no UDP support yet, see pigeon_coap_config in pigeon.h.
+    constrained cellular paths. The wire transport underneath is its own
+    choice (PIGEON_COAP_TRANSPORT below): CoAP-over-DTLS/UDP (RFC 7252,
+    coaps://) for constrained/battery/cellular devices, or
+    CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://) where a stream socket is a
+    better fit.
 
 config PIGEON_CONNECTOR_HTTPS
   bool "HTTPS REST API"
@@ -31,6 +33,22 @@ config PIGEON_CONNECTOR_HTTPS
 endchoice
 
 if PIGEON_CONNECTOR_COAP
+
+choice PIGEON_COAP_TRANSPORT
+  prompt "CoAP transport"
+  default PIGEON_COAP_TRANSPORT_TCP
+
+config PIGEON_COAP_TRANSPORT_TCP
+  bool "CoAP over TLS/TCP (RFC 8323, coaps+tcp://)"
+  help
+    The historical transport (and so the default -- existing builds see no
+    change): one TLS/TCP connection per exchange, RFC 8323 framing (no
+    message IDs or CoAP-layer retransmission -- TCP owns reliability).
+    CONFIG_PIGEON_ENDPOINT must be a coaps+tcp:// URL. The board must
+    provide a TCP-capable TLS stack (native mbedTLS or an offloading
+    modem), same as the HTTPS connector.
+
+endchoice
 
 config PIGEON_COAP_SEC_TAG
   int "TLS sec_tag for the Pigeon CoAP connector"
@@ -575,13 +593,15 @@ config PIGEON_ENDPOINT
   string "Pigeon Backend Endpoint"
   help
     URL of the PidgeIoT edge endpoint this device connects to: an
-    https:// REST URL for CONFIG_PIGEON_CONNECTOR_HTTPS, or a
-    coaps+tcp:// (RFC 8323 CoAP-over-TLS/TCP) host for
-    CONFIG_PIGEON_CONNECTOR_COAP, since this device stack has no UDP
-    support yet. Mirrors dovecote's build_http_endpoint output for HTTPS
-    (e.g. https://api.pidgeiot.com/device/pigeons/<device_id>) and
-    build_coap_endpoint's coaps+tcp:// output for CoAP -- though dovecote
-    has no actual CoAP listener yet, only the endpoint string.
+    https:// REST URL for CONFIG_PIGEON_CONNECTOR_HTTPS, or -- for
+    CONFIG_PIGEON_CONNECTOR_COAP -- a coaps:// (RFC 7252 CoAP-over-
+    DTLS/UDP, CONFIG_PIGEON_COAP_TRANSPORT_UDP) or coaps+tcp:// (RFC 8323
+    CoAP-over-TLS/TCP, CONFIG_PIGEON_COAP_TRANSPORT_TCP) host; the scheme
+    must match the compiled-in transport (validated at first use).
+    Mirrors dovecote's build_http_endpoint output for HTTPS (e.g.
+    https://api.pidgeiot.com/device/pigeons/<device_id>) and
+    build_coap_endpoint's output for CoAP -- though dovecote has no
+    actual CoAP listener deployed yet, only the endpoint string.
 
 config PIGEON_TOKEN
   string "Pigeon Device Auth Token"

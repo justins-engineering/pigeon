@@ -16,6 +16,7 @@ zephyr_library_sources(src/pigeon_core.c)
 
 # Conditionally compile modules based on structural Kconfig choices
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP  src/pigeon_coap.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tcp.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_HTTPS src/pigeon_https.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backend.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
