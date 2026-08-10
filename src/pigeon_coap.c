@@ -9,6 +9,7 @@
 
 #if defined(CONFIG_MODEM_KEY_MGMT)
 #include <modem/modem_key_mgmt.h>
+#include <psa/crypto.h>
 #endif
 
 #include "pigeon_coap_internal.h"
@@ -148,7 +149,49 @@ int pigeon_coap_parse_endpoint(void) {
  * reaches the real store, but only while the modem is offline (CFUN=0/4),
  * so provisioning runs eagerly from pigeon_init() and the app must call
  * pigeon_init() BEFORE bringing LTE up. The modem's PSK slot (%CMNG type
- * 4) wants the secret as ASCII hex, not raw bytes. */
+ * 3) wants the secret as ASCII hex, not raw bytes. */
+
+/* The modem never hands a stored PSK secret back out (%CMNG read on that
+ * type is refused), so modem_key_mgmt_cmp() -- an AT read under the hood
+ * -- returns -EACCES on the secret even when the stored value is
+ * identical, and can never confirm a match. What the modem does expose
+ * for every credential type is a SHA-256 digest of the stored data, so
+ * compare by hashing the exact bytes a write would store and checking
+ * digests instead; the identity slot gets the same treatment so both
+ * slots go through one code path. */
+static bool pigeon_coap_modem_cred_matches(
+    enum modem_key_mgmt_cred_type type, const void *buf, size_t len
+) {
+  bool exists = false;
+  int err = modem_key_mgmt_exists(CONFIG_PIGEON_COAP_SEC_TAG, type, &exists);
+
+  if (err != 0 || !exists) {
+    return false;
+  }
+
+  uint8_t stored[MODEM_KEY_MGMT_DIGEST_SIZE];
+
+  err = modem_key_mgmt_digest(CONFIG_PIGEON_COAP_SEC_TAG, type, stored, sizeof(stored));
+  if (err != 0) {
+    return false;
+  }
+
+  uint8_t local[MODEM_KEY_MGMT_DIGEST_SIZE];
+  size_t local_len = 0;
+
+  if (psa_crypto_init() != PSA_SUCCESS ||
+      psa_hash_compute(PSA_ALG_SHA_256, buf, len, local, sizeof(local), &local_len) !=
+          PSA_SUCCESS ||
+      local_len != sizeof(stored)) {
+    /* Treated as a mismatch: falling through to the write is the same
+     * outcome the pre-digest code had on every boot, so a hash backend
+     * hiccup degrades to extra flash wear, never to lost provisioning. */
+    return false;
+  }
+
+  return memcmp(stored, local, sizeof(stored)) == 0;
+}
+
 static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
   static const char hex_digits[] = "0123456789abcdef";
   char psk_hex[PIGEON_COAP_PSK_MAX * 2 + 1];
@@ -168,24 +211,17 @@ static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
   psk_hex[secret_len * 2] = '\0';
 
   /* Compare-before-write: skips the (modem-offline-only, flash-wearing)
-   * write when the stored credentials already match, so a warm restart
+   * writes when the stored credentials already match, so a warm restart
    * that reaches pigeon_init() with credentials already in place doesn't
    * fail or rewrite for no reason. */
-  int err = modem_key_mgmt_cmp(
-      CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity,
-      strlen(cfg->tls_psk_identity)
-  );
-
-  if (err == 0) {
-    err = modem_key_mgmt_cmp(
-        CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_PSK, psk_hex, strlen(psk_hex)
-    );
-    if (err == 0) {
-      return 0;
-    }
+  if (pigeon_coap_modem_cred_matches(
+          MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity, strlen(cfg->tls_psk_identity)
+      ) &&
+      pigeon_coap_modem_cred_matches(MODEM_KEY_MGMT_CRED_TYPE_PSK, psk_hex, strlen(psk_hex))) {
+    return 0;
   }
 
-  err = modem_key_mgmt_write(
+  int err = modem_key_mgmt_write(
       CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity,
       strlen(cfg->tls_psk_identity)
   );
