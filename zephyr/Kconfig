@@ -48,7 +48,63 @@ config PIGEON_COAP_TRANSPORT_TCP
     provide a TCP-capable TLS stack (native mbedTLS or an offloading
     modem), same as the HTTPS connector.
 
+config PIGEON_COAP_TRANSPORT_UDP
+  bool "CoAP over DTLS/UDP (RFC 7252, coaps://)"
+  help
+    The primary transport for constrained battery/cellular devices: a
+    single long-lived DTLS session (PSK, TLS_PSK_WITH_AES_128_CCM_8
+    target) carrying proper RFC 7252 confirmable exchanges -- CON/ACK,
+    exponential-backoff retransmission, and duplicate detection, governed
+    by Zephyr's own CoAP transmission Kconfigs
+    (CONFIG_COAP_INIT_ACK_TIMEOUT_MS, CONFIG_COAP_ACK_RANDOM_PERCENT,
+    CONFIG_COAP_BACKOFF_PERCENT, CONFIG_COAP_MAX_RETRANSMIT -- RFC 7252
+    sec 4.2's ACK_TIMEOUT/ACK_RANDOM_FACTOR/MAX_RETRANSMIT), not new
+    PIGEON-specific knobs. CONFIG_PIGEON_ENDPOINT must be a coaps:// URL.
+
+    The board must provide a DTLS-capable stack: natively,
+    CONFIG_NET_SOCKETS_ENABLE_DTLS plus a PSK key exchange
+    (CONFIG_MBEDTLS_KEY_EXCHANGE_PSK_ENABLED and the AES-CCM PSA wants --
+    see the coap_dtls_init sample's board configs in pigeon-examples); on
+    nRF91-class boards the modem's own offloaded DTLS is used instead and
+    none of the mbedTLS options apply. The DTLS socket is kept open across
+    exchanges (unlike the TCP transport's connect-per-exchange): a
+    handshake is paid once, then each report rides the established
+    session, with an automatic re-handshake if the session dies. See
+    PIGEON_COAP_DTLS_CID below for surviving NAT rebinds/PSM sleep without
+    even that re-handshake.
+
 endchoice
+
+if PIGEON_COAP_TRANSPORT_UDP
+
+config PIGEON_COAP_DTLS_CID
+  bool "Request DTLS Connection ID (RFC 9146) on the CoAP DTLS session"
+  default y
+  help
+    Offers the DTLS Connection ID extension as a client (an empty CID:
+    "I'll echo yours, don't send me one" -- TLS_DTLS_CID_SUPPORTED), so a
+    CID-capable server can keep attributing this device's records to the
+    established session after the source address/port changes underneath
+    it. That is exactly what happens to a cellular device behind carrier
+    NAT after a PSM sleep: without CID the first post-sleep send from a
+    rebound NAT port is unattributable and forces a full re-handshake;
+    with CID the same session simply keeps working -- the whole reason
+    DTLS/UDP is the constrained-device transport of choice here.
+
+    Backend support status (verified against this workspace's vendored
+    trees, 2026-08): native Zephyr sockets wire this straight into
+    mbedTLS's own RFC 9146 support (CONFIG_MBEDTLS_SSL_DTLS_CONNECTION_ID
+    must be enabled, or the setsockopt fails and this library logs a
+    warning and continues without CID); nRF91 offloaded sockets map the
+    same TLS_DTLS_CID option onto the modem's NRF_SO_SEC_DTLS_CID, which
+    requires modem firmware mfw_nrf9160 v1.3.5+ (nRF9160) or any
+    mfw_nrf91x1/mfw_nrf9151-ntn release -- on older firmware the option
+    fails and the session continues CID-less, again with a logged
+    warning. Either way the negotiated status is logged after each
+    handshake (TLS_DTLS_CID_STATUS), so "did CID actually engage" is
+    observable per connection rather than assumed.
+
+endif # PIGEON_COAP_TRANSPORT_UDP
 
 config PIGEON_COAP_SEC_TAG
   int "TLS sec_tag for the Pigeon CoAP connector"

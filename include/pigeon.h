@@ -27,12 +27,18 @@ enum pigeon_connector_type {
  */
 
 /*
- * No on-device UDP support yet, so this connector speaks CoAP over TLS/TCP
- * (RFC 8323 coaps+tcp://) instead of the usual CoAP-over-DTLS/UDP. Matches
- * capsules::CoapConfig's tls_psk_identity/tls_psk_secret and dovecote's
- * coaps+tcp:// endpoints as of 2026-07-15 — though dovecote still has no
- * actual CoAP listener, so this transport has nothing to talk to yet.
- * NULL when absent (Option<String>::None).
+ * PSK credentials for the CoAP connector's secured transport -- either
+ * CoAP-over-DTLS/UDP (RFC 7252, coaps://, CONFIG_PIGEON_COAP_TRANSPORT_UDP,
+ * the primary choice for constrained battery/cellular devices) or
+ * CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://,
+ * CONFIG_PIGEON_COAP_TRANSPORT_TCP). Field names match
+ * capsules::CoapConfig's tls_psk_identity/tls_psk_secret; the same pair
+ * feeds whichever transport is compiled in (registered under
+ * CONFIG_PIGEON_COAP_SEC_TAG via tls_credential_add()). NULL when absent
+ * (Option<String>::None).
+ * Note dovecote still has no CoAP listener deployed (the terminator is a
+ * tracked roadmap item) -- protocol conformance is currently verified
+ * against libcoap instead.
  */
 struct pigeon_coap_config {
   const char *tls_psk_identity;
