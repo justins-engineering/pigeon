@@ -23,7 +23,9 @@ enum pigeon_connector_type {
  * from CONFIG_PIGEON_ENDPOINT/CONFIG_PIGEON_TOKEN instead of runtime struct
  * fields: PIGEON_CONNECTOR_TYPE is already a build-time choice (only one of
  * pigeon_coap.c/pigeon_https.c is compiled in), so there is never more than
- * one live endpoint/token pair to configure.
+ * one live endpoint/token pair to configure. On CoAP builds the token may
+ * be empty: the PSK handshake authenticates the device, and requests carry
+ * no in-band token.
  */
 
 /*
@@ -118,7 +120,8 @@ int pigeon_telemetry_set(const char *key, const char *val);
  *
  * Builds ONE flat JSON object of all pending keys ({"k1":"v1","k2":"v2",...})
  * and sends it as a single POST <CONFIG_PIGEON_ENDPOINT>/telemetry
- * (device-authenticated with CONFIG_PIGEON_TOKEN) -- or, when CONFIG_PIGEON_WS
+ * (device-authenticated: bearer CONFIG_PIGEON_TOKEN on HTTPS, the PSK
+ * session itself on CoAP) -- or, when CONFIG_PIGEON_WS
  * is enabled and the socket is up, as a single WS telemetry frame carrying
  * the same object as its metrics map, falling back to the HTTPS/CoAP
  * transport when it isn't. Matches dovecote's report_telemetry_device
@@ -173,8 +176,9 @@ int pigeon_shadow_flush(void);
 /**
  * @brief Fetch the current shadow document from the platform.
  *
- * Issues GET <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with
- * CONFIG_PIGEON_TOKEN). Applying target_config is the caller's job (this
+ * Issues GET <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated: bearer
+ * CONFIG_PIGEON_TOKEN on HTTPS, the PSK session itself on CoAP). Applying
+ * target_config is the caller's job (this
  * library does not parse it, see pigeon_shadow_doc); call pigeon_shadow_report()
  * afterwards to confirm what was applied.
  *
@@ -190,8 +194,9 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
 /**
  * @brief Report back the shadow config the device has actually applied.
  *
- * Issues POST <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated with
- * CONFIG_PIGEON_TOKEN), body {"current_config": <current_config, raw JSON>,
+ * Issues POST <CONFIG_PIGEON_ENDPOINT>/shadow (device-authenticated: bearer
+ * CONFIG_PIGEON_TOKEN on HTTPS, the PSK session itself on CoAP), body
+ * {"current_config": <current_config, raw JSON>,
  * "current_version": current_version} -- mirrors capsules::
  * PigeonShadowReportRequest / dovecote's report_shadow_device. Call this
  * after applying a target_config fetched via pigeon_shadow_get(), passing
