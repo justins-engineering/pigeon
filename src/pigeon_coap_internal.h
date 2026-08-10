@@ -52,7 +52,10 @@ int pigeon_coap_parse_endpoint(void);
 /*
  * Registers PSK credentials from pigeon_init()'s config under
  * CONFIG_PIGEON_COAP_SEC_TAG, if the app supplied any (no-op otherwise, or
- * when already registered). Called by each transport before connecting.
+ * when already registered). Called by each transport before connecting;
+ * also called eagerly from pigeon_init() on CONFIG_MODEM_KEY_MGMT builds,
+ * where the modem's credential store is only writable pre-LTE (see
+ * pigeon_coap.c's pigeon_coap_psk_write_modem()).
  */
 int pigeon_coap_register_psk(void);
 

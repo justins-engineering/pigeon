@@ -10,6 +10,10 @@
 
 #include "pigeon_internal.h"
 
+#if defined(CONFIG_PIGEON_CONNECTOR_COAP) && defined(CONFIG_MODEM_KEY_MGMT)
+#include "pigeon_coap_internal.h"
+#endif
+
 LOG_MODULE_REGISTER(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 /* Batched pending-telemetry store: CONFIG_PIGEON_TELEMETRY_MAX_KEYS
@@ -132,6 +136,22 @@ int pigeon_init(const struct pigeon_config* config) {
     case PIGEON_CONNECTOR_COAP:
       LOG_INF("Transport mapped to low-overhead CoAP edge pipeline: %s", CONFIG_PIGEON_ENDPOINT);
       pigeon_coap_cfg = config->connector.coap;
+#if defined(CONFIG_PIGEON_CONNECTOR_COAP) && defined(CONFIG_MODEM_KEY_MGMT)
+      /* Modem-offloaded boards keep TLS/DTLS credentials in the modem's
+       * own store, writable only while the modem is offline -- so PSK
+       * provisioning can't stay lazy inside the transport's first
+       * connect() (LTE is up by then). It happens here instead, which
+       * obligates the app to call pigeon_init() BEFORE bringing LTE up on
+       * these builds -- see pigeon_coap_psk_write_modem() in
+       * pigeon_coap.c and coap_dtls_init's main.c in pigeon-examples. */
+      {
+        int cred_err = pigeon_coap_register_psk();
+
+        if (cred_err) {
+          return cred_err;
+        }
+      }
+#endif
       break;
     default:
       LOG_ERR("Unknown connector type: %d", config->connector.type);

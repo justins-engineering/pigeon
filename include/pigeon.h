@@ -33,9 +33,10 @@ enum pigeon_connector_type {
  * CoAP-over-TLS/TCP (RFC 8323, coaps+tcp://,
  * CONFIG_PIGEON_COAP_TRANSPORT_TCP). Field names match
  * capsules::CoapConfig's tls_psk_identity/tls_psk_secret; the same pair
- * feeds whichever transport is compiled in (registered under
- * CONFIG_PIGEON_COAP_SEC_TAG via tls_credential_add()). NULL when absent
- * (Option<String>::None).
+ * feeds whichever transport is compiled in (registered natively via
+ * tls_credential_add(), or -- CONFIG_MODEM_KEY_MGMT builds -- written into
+ * the nRF91 modem's own credential store, where the TLS/DTLS stack actually
+ * lives on those boards). NULL when absent (Option<String>::None).
  * Note dovecote still has no CoAP listener deployed (the terminator is a
  * tracked roadmap item) -- protocol conformance is currently verified
  * against libcoap instead.

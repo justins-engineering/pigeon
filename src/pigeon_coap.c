@@ -7,6 +7,10 @@
 #include <zephyr/net/tls_credentials.h>
 #include <zephyr/sys/util.h>
 
+#if defined(CONFIG_MODEM_KEY_MGMT)
+#include <modem/modem_key_mgmt.h>
+#endif
+
 #include "pigeon_coap_internal.h"
 #include "pigeon_internal.h"
 
@@ -137,6 +141,78 @@ int pigeon_coap_parse_endpoint(void) {
   return 0;
 }
 
+#if defined(CONFIG_MODEM_KEY_MGMT)
+/* On nRF91-class boards TLS/DTLS runs inside the modem, which looks
+ * credentials up in its OWN store (%CMNG) -- tls_credential_add() into
+ * Zephyr's native store is invisible to it, which is exactly the
+ * long-documented coap_tcp_init known gap (its board conf's NOTE about
+ * real-hardware PSK auth never working). modem_key_mgmt_write() reaches
+ * the real store, but only while the modem is offline (CFUN=0/4) -- so on
+ * these builds pigeon_init() provisions eagerly (see pigeon_core.c) and
+ * the app must call pigeon_init() BEFORE bringing LTE up, the reverse of
+ * the historical CoAP sample ordering (see coap_dtls_init's main.c in
+ * pigeon-examples). The modem's PSK slot (%CMNG type 4) wants the secret
+ * as ASCII hex, not raw bytes. */
+static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
+  static const char hex_digits[] = "0123456789abcdef";
+  /* Hex-encoding doubles the secret; size the scratch off the Uri-Query
+   * cap, which already bounds how long a usable device credential can
+   * get on this connector. */
+  char psk_hex[PIGEON_COAP_QUERY_MAX * 2];
+  size_t secret_len = strlen(cfg->tls_psk_secret);
+
+  if (secret_len * 2 >= sizeof(psk_hex)) {
+    LOG_ERR("CoAP PSK secret too long to hex-encode for the modem store");
+    return -ENOSPC;
+  }
+
+  for (size_t i = 0; i < secret_len; i++) {
+    uint8_t byte = (uint8_t)cfg->tls_psk_secret[i];
+
+    psk_hex[2 * i] = hex_digits[byte >> 4];
+    psk_hex[2 * i + 1] = hex_digits[byte & 0x0F];
+  }
+  psk_hex[secret_len * 2] = '\0';
+
+  /* Compare-before-write: skips the (modem-offline-only, flash-wearing)
+   * write when the stored credentials already match, so a warm restart
+   * that reaches pigeon_init() with credentials already in place doesn't
+   * fail or rewrite for no reason. */
+  int err = modem_key_mgmt_cmp(
+      CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity,
+      strlen(cfg->tls_psk_identity)
+  );
+
+  if (err == 0) {
+    err = modem_key_mgmt_cmp(
+        CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_PSK, psk_hex, strlen(psk_hex)
+    );
+    if (err == 0) {
+      return 0;
+    }
+  }
+
+  err = modem_key_mgmt_write(
+      CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity,
+      strlen(cfg->tls_psk_identity)
+  );
+  if (err) {
+    LOG_ERR("Failed to write CoAP PSK identity to modem store: %d", err);
+    return err;
+  }
+
+  err = modem_key_mgmt_write(
+      CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_PSK, psk_hex, strlen(psk_hex)
+  );
+  if (err) {
+    LOG_ERR("Failed to write CoAP PSK secret to modem store: %d", err);
+    return err;
+  }
+
+  return 0;
+}
+#endif /* CONFIG_MODEM_KEY_MGMT */
+
 int pigeon_coap_register_psk(void) {
   if (pigeon_coap_psk_registered) {
     return 0;
@@ -148,6 +224,17 @@ int pigeon_coap_register_psk(void) {
     return 0;
   }
 
+#if defined(CONFIG_MODEM_KEY_MGMT)
+  int err = pigeon_coap_psk_write_modem(cfg);
+
+  if (err) {
+    return err;
+  }
+
+  pigeon_coap_psk_registered = true;
+
+  return 0;
+#else
   int err = tls_credential_add(
       CONFIG_PIGEON_COAP_SEC_TAG, TLS_CREDENTIAL_PSK_ID, cfg->tls_psk_identity,
       strlen(cfg->tls_psk_identity)
@@ -171,6 +258,7 @@ int pigeon_coap_register_psk(void) {
   pigeon_coap_psk_registered = true;
 
   return 0;
+#endif /* CONFIG_MODEM_KEY_MGMT */
 }
 
 /* Uri-Path has no single "/a/b" option like HTTP (RFC 7252 sec 6.4) -- one
