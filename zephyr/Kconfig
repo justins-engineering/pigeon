@@ -116,6 +116,35 @@ config PIGEON_COAP_DTLS_CID
 
 endif # PIGEON_COAP_TRANSPORT_UDP
 
+config PIGEON_COAP_TLS_PSK_IDENTITY
+  string "CoAP connector DTLS/TLS PSK identity"
+  default ""
+  help
+    Same build-time-Kconfig-string convention as CONFIG_PIGEON_ENDPOINT/
+    CONFIG_PIGEON_TOKEN, so a real device's PSK never sits as a literal in
+    application source -- it belongs only in a git-ignored prj.local.conf
+    fragment. Deliberately NOT read by this library itself, though:
+    struct pigeon_coap_config's tls_psk_identity/tls_psk_secret (pigeon.h)
+    stay the only thing pigeon_init() actually consults, since the CoAP
+    PSK is optional per-device and that struct's NULL-when-absent
+    semantics (Option<String>::None, matching capsules::CoapConfig) would
+    otherwise have no way to represent "not supplied" against an always-
+    defined Kconfig string. An application wires this in itself, and must
+    map the empty default to NULL rather than passing it through verbatim
+    (see the coap_dtls_init sample's PSK_CONF_OR_NULL): to pigeon_init()
+    a non-NULL empty string is a supplied zero-length credential that
+    fails every handshake, not an absent one. Conventionally the pigeon
+    id, matching capsules::CoapConfig's tls_psk_identity.
+
+config PIGEON_COAP_TLS_PSK_SECRET
+  string "CoAP connector DTLS/TLS PSK secret"
+  default ""
+  help
+    Sibling of CONFIG_PIGEON_COAP_TLS_PSK_IDENTITY above -- same
+    rationale, same app-wires-it-in-itself convention. Holds the short
+    key minted alongside the device's bearer token
+    (capsules::CoapConfig's tls_psk_secret), not the token itself.
+
 config PIGEON_COAP_SEC_TAG
   int "TLS sec_tag for the Pigeon CoAP connector"
   default 1
