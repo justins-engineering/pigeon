@@ -8,6 +8,7 @@
 #include <zephyr/sys/util.h>
 
 #if defined(CONFIG_MODEM_KEY_MGMT)
+#include <mbedtls/platform_util.h>
 #include <modem/modem_key_mgmt.h>
 #include <psa/crypto.h>
 #endif
@@ -214,20 +215,22 @@ static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
    * writes when the stored credentials already match, so a warm restart
    * that reaches pigeon_init() with credentials already in place doesn't
    * fail or rewrite for no reason. */
+  int err = 0;
+
   if (pigeon_coap_modem_cred_matches(
           MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity, strlen(cfg->tls_psk_identity)
       ) &&
       pigeon_coap_modem_cred_matches(MODEM_KEY_MGMT_CRED_TYPE_PSK, psk_hex, strlen(psk_hex))) {
-    return 0;
+    goto out;
   }
 
-  int err = modem_key_mgmt_write(
+  err = modem_key_mgmt_write(
       CONFIG_PIGEON_COAP_SEC_TAG, MODEM_KEY_MGMT_CRED_TYPE_IDENTITY, cfg->tls_psk_identity,
       strlen(cfg->tls_psk_identity)
   );
   if (err) {
     LOG_ERR("Failed to write CoAP PSK identity to modem store: %d", err);
-    return err;
+    goto out;
   }
 
   err = modem_key_mgmt_write(
@@ -235,10 +238,22 @@ static int pigeon_coap_psk_write_modem(const struct pigeon_coap_config *cfg) {
   );
   if (err) {
     LOG_ERR("Failed to write CoAP PSK secret to modem store: %d", err);
-    return err;
   }
 
-  return 0;
+out:
+  /* psk_hex held the PSK secret in plaintext (ASCII-hex) for the modem
+   * writes above; wipe it before this frame goes out of scope rather than
+   * leaving it sitting readable on the stack for whatever this thread
+   * calls next. Defense-in-depth only -- nothing here logs or otherwise
+   * discloses psk_hex, and cfg->tls_psk_secret retains the raw secret for
+   * the process lifetime regardless -- but the wipe is cheap and each
+   * exit path (early match, either write failing, or full success) needs
+   * it, hence the shared label instead of repeating the call at every
+   * return. mbedtls_platform_zeroize rather than memset() so the store
+   * can't be optimized away as dead: the compiler can see nothing reads
+   * psk_hex again before it goes out of scope. */
+  mbedtls_platform_zeroize(psk_hex, sizeof(psk_hex));
+  return err;
 }
 #endif /* CONFIG_MODEM_KEY_MGMT */
 
