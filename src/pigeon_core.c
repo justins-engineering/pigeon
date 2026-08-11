@@ -78,13 +78,13 @@ size_t pigeon_json_escape(const char *in, char *out, size_t out_len) {
     } else if (c < 0x20) {
       /* Every other control character (0x00-0x1F) is illegal unescaped in
        * a JSON string per RFC 8259 sec 7, and has no shorthand -- \u00XX
-       * is the only option. Caught by real-world use: an arbitrary
-       * caller-supplied telemetry value (e.g. a sensor error string) with
-       * an embedded raw control byte used to produce invalid JSON here;
-       * over HTTPS/CoAP that failed one isolated report, but over
-       * pigeon_ws.c's shared persistent socket it got the whole connection
-       * closed by dovecote's strict serde_json parse (code 4003), tearing
-       * down shadow_update push delivery along with the one bad report. */
+       * is the only option. An unescaped control byte in a caller-supplied
+       * telemetry value (e.g. a sensor error string) produces invalid
+       * JSON: over HTTPS/CoAP that fails one isolated report, but over
+       * pigeon_ws.c's shared persistent socket it closes the whole
+       * connection under dovecote's strict serde_json parse (code 4003),
+       * tearing down shadow_update push delivery along with the one bad
+       * report. */
       if (o + 6 >= out_len) {
         break;
       }
@@ -202,8 +202,8 @@ int pigeon_telemetry_set(const char *key, const char *val) {
 
     if (slot->pending && strcmp(slot->key, key) == 0) {
       /* Latest-value-per-key: refreshing a still-pending key's value is the
-       * expected steady state (it mirrors the backend's own upsert), not
-       * the data-loss hazard the old single-slot store used to warn about. */
+       * expected steady state, mirroring the backend's own upsert
+       * semantics. */
       strcpy(slot->val, val);
       LOG_INF("Updated pending telemetry: %s=%s", key, val);
       return 0;

@@ -1,6 +1,6 @@
 /*
- * Remote diagnostic shell over the device WebSocket channel (task #34).
- * Executes a small, owner-configured allowlist of shell commands relayed
+ * Remote diagnostic shell over the device WebSocket channel. Executes a
+ * small, owner-configured allowlist of shell commands relayed
  * by dovecote as "shell_cmd" frames (pigeon_ws.c's frame dispatch), and
  * replies with a "shell_output" frame (pigeon_ws_send_shell_output(),
  * pigeon_ws.c) -- see zephyr/Kconfig's CONFIG_PIGEON_SHELL help text and
@@ -128,10 +128,10 @@ static void pigeon_shell_run(const struct pigeon_shell_request *req) {
    * so *any* LOG_* call anywhere in the image (including this file's own
    * two log lines) that gets drained during that window lands straight in
    * sh_dummy->buf via the same write() shell_execute_cmd()'s own output
-   * goes through. Confirmed empirically on native_sim: a background thread
-   * logging every few ms contaminated ~40% of captured outputs with
-   * interleaved log lines and shell escape sequences before this fix,
-   * 0/30 after.
+   * goes through. On native_sim, a background thread logging every few ms
+   * was enough to interleave log lines and shell escape sequences into
+   * roughly 40% of captured outputs when this window wasn't disabled this
+   * way.
    *
    * z_shell_log_backend_disable() flips this backend's state to
    * SHELL_LOG_BACKEND_DISABLED, which its process() callback checks before

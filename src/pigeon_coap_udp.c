@@ -62,10 +62,10 @@ static int pigeon_coap_udp_connect(void) {
     return err;
   }
 
-  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
-   * records for this host, and a hard-coded v4 hint used to make
-   * zsock_getaddrinfo() itself fail here -- every exchange -EHOSTUNREACH,
-   * no fallback. Below, each candidate the resolver returns (in its own
+  /* AF_UNSPEC, not AF_INET: a hard-coded v4 hint makes zsock_getaddrinfo()
+   * itself fail here on an IPv6-only cellular PDN, which hands back only
+   * AAAA records for this host -- every exchange -EHOSTUNREACH, no
+   * fallback. Below, each candidate the resolver returns (in its own
    * ranked order, RFC 6724) gets a real connect attempt; the loop moves on
    * to the next one on any failure instead of giving up on the first. */
   struct zsock_addrinfo hints = {

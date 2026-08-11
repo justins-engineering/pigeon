@@ -319,8 +319,8 @@ config PIGEON_FOTA_NCS
     same flash_img/boot_request_upgrade primitives underneath), kept
     around as the vendor-SDK path because it's what real nRF91
     hardware e2e was actually verified against (see this library's
-    CLAUDE.md, task #23-24) before the default was inverted to the
-    vendor-neutral upstream path. Only meaningful -- and only
+    CLAUDE.md), even though the default favors the vendor-neutral
+    upstream path instead. Only meaningful -- and only
     buildable -- under an nRF Connect SDK west workspace (west.yml,
     not west-vanilla.yml, in the sibling pigeon-examples repo), since
     DFU_TARGET/DFU_TARGET_MCUBOOT are defined by the nrf module, not
@@ -335,10 +335,10 @@ config PIGEON_FOTA_RESUME
   select DFU_TARGET_STREAM_SAVE_PROGRESS if PIGEON_FOTA_NCS
   help
     Without this option, any failed or interrupted pigeon_fota_apply()
-    restarts from byte 0 -- observed live on an LTE-M departure sign
-    (2026-08-02) where a download that died at 72% of a ~486KB image
-    threw away ~45 minutes of Range-GET progress, on a link that itself
-    degrades under sustained traffic. With it, the number of bytes
+    restarts from byte 0 -- on an LTE-M departure sign, a download that
+    died at 72% of a ~486KB image threw away ~45 minutes of Range-GET
+    progress, on a link that itself degrades under sustained traffic.
+    With it, the number of bytes
     confirmed FLUSHED to the MCUboot secondary slot is persisted (via the
     settings subsystem, alongside the flash-write backend's own persisted
     stream progress) after every chunk, and the next pigeon_fota_apply()
@@ -388,12 +388,12 @@ config PIGEON_FOTA_CHUNK_YIELD_MS
   range 0 1000
   help
     Sleep this long between consecutive Range-GET chunk requests during
-    pigeon_fota_apply(). 0 (the default, the historical behavior) fetches
-    chunks back to back, which on a narrow link (LTE-M) can saturate the
-    modem's downlink and DNS/socket capacity so thoroughly that the
-    application's own concurrent traffic starves -- observed live on an
-    nRF9160 departure sign (2026-08-02), where the app's 30s fetch cycle
-    failed repeatedly for the whole download. A modest yield (tens of ms)
+    pigeon_fota_apply(). 0 (the default) fetches chunks back to back,
+    which on a narrow link (LTE-M) can saturate the modem's downlink and
+    DNS/socket capacity so thoroughly that the application's own
+    concurrent traffic starves -- on an nRF9160 departure sign, the app's
+    30s fetch cycle failed repeatedly for the whole download. A modest
+    yield (tens of ms)
     opens periodic airtime windows for the rest of the system at a small
     cost in total download time (chunks x yield). Tune per-fleet; the
     right value depends on link bandwidth and how chatty the app is.
@@ -421,7 +421,7 @@ config PIGEON_WS
   select NET_CONTEXT_SNDTIMEO
   help
     Persistent wss:// connection to <CONFIG_PIGEON_ENDPOINT>/ws (dovecote's
-    device WebSocket endpoint, task #32). Server pushes shadow_update frames
+    device WebSocket endpoint). Server pushes shadow_update frames
     on dashboard config writes so the device reacts without polling; the
     device sends application-level ping keepalives and (opportunistically)
     telemetry frames over the open socket. HTTPS remains the transport for
@@ -481,7 +481,7 @@ config PIGEON_SHELL
   help
     Lets an operator run a small, owner-configured allowlist of diagnostic
     shell commands on this device remotely, relayed over the existing
-    CONFIG_PIGEON_WS socket (task #34). This is remote code execution on
+    CONFIG_PIGEON_WS socket. This is remote code execution on
     the device by design -- off by default, and even once enabled, denies
     every command unless it matches CONFIG_PIGEON_SHELL_ALLOWLIST (or
     CONFIG_PIGEON_SHELL_ALLOW_ALL is explicitly set). Only enable for
@@ -547,9 +547,9 @@ config PIGEON_REBOOT_ON_FATAL
   default n
   select REBOOT
   help
-    Task #45's PRIMARY mitigation for the exact failure diagnosed in task
-    #15/#45 (see CONFIG_PIGEON_WATCHDOG below for the full trace/history):
-    real ESP32-C6 hardware hit a Zephyr FATAL error (z_fatal_error, an
+    The PRIMARY mitigation for the exact failure diagnosed below (see
+    CONFIG_PIGEON_WATCHDOG for the full trace): real ESP32-C6 hardware
+    hit a Zephyr FATAL error (z_fatal_error, an
     "Environment call from M-mode" -- a deliberate ecall-based assert deep
     inside Espressif's closed-source WiFi MAC blob, not a wild memory fault)
     after 42-60 minutes of uptime. Zephyr's default policy for ANY fatal
@@ -587,8 +587,8 @@ config PIGEON_WATCHDOG
   select TASK_WDT
   select WATCHDOG
   help
-    Task #15/#45: real ESP32-C6 soak testing found this library's WS/HTTPS
-    stack can hard-wedge after 42-60 minutes of uptime -- a rare, reconnect-
+    Real ESP32-C6 soak testing found this library's WS/HTTPS stack can
+    hard-wedge after 42-60 minutes of uptime -- a rare, reconnect-
     churn-triggered assert deep inside Espressif's closed-source WiFi MAC
     blob (libnet80211.a, no source available -- see this library's CLAUDE.md
     for the symbol-resolved trace), which trips Zephyr's OWN fatal-error
@@ -624,8 +624,7 @@ config PIGEON_WATCHDOG
     independent of the CPU's interrupt state, forcing a full SoC reset once
     its own window (CONFIG_TASK_WDT_MIN_TIMEOUT + CONFIG_TASK_WDT_HW_
     FALLBACK_DELAY) expires with nobody left alive to keep feeding it.
-    **Known-broken on ESP32 targets as of this writing** (found verifying
-    this exact feature, task #45): zephyr/drivers/watchdog/wdt_esp32.c
+    **Known-broken on ESP32 targets**: zephyr/drivers/watchdog/wdt_esp32.c
     passes the millisecond timeout value straight into wdt_hal_config_stage()
     as raw hardware TICKS with no conversion (that HAL function's own doc
     says its parameter is ticks; this driver defines the conversion
@@ -633,11 +632,10 @@ config PIGEON_WATCHDOG
     never uses them -- confirmed by comparison against ESP-IDF's own
     reference task-watchdog code in the same vendored tree, which does
     convert). A deliberately forced interrupts-disabled hang
-    (arch_irq_lock(); for(;;){}) on real ESP32-C6 hardware did not recover
-    across two attempts, the second confirmed via continuous live serial
-    capture: zero bytes for 550+ seconds (~9.2 minutes) against an intended
-    ~120ms deadline -- ~4500x over, with no reset observed before we
-    stopped watching. Draft upstream report: pigeon-examples' docs/upstream-issues/
+    (arch_irq_lock(); for(;;){}) on real ESP32-C6 hardware did not recover:
+    zero bytes on live serial for 550+ seconds (~9.2 minutes) against an
+    intended ~120ms deadline -- roughly 4500x over, with no reset observed.
+    Draft upstream report: pigeon-examples' docs/upstream-issues/
     zephyr-wdt_esp32-missing-tick-conversion.md. Deliberately NOT working
     around this here (e.g. with a compensating ms->ticks fudge factor) --
     that would silently double-convert the day upstream fixes the driver,

@@ -20,11 +20,9 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * on the wire as an escaped JSON string, where the dashboard-authored
  * quote/backslash density observed in real configs stays well under the
  * +25% growth budgeted here -- plus ~110 bytes of version/timestamp/key
- * framing, rounded up to 128. (History: a fixed 768 -- itself bumped from
- * 640/256 when the "firmware" key landed -- which this formula reproduces
- * within rounding at the 320-byte default: 2*400 + 128 = 928, replacing a
- * value that had NO escape headroom at all and sat one quote-dense config
- * away from silent truncation.) */
+ * framing, rounded up to 128. A fixed size with no escape headroom sits
+ * one quote-dense config away from silent truncation; this formula gives
+ * 2*400 + 128 = 928 bytes at the 320-byte default. */
 #define PIGEON_HTTPS_RECV_BUF_LEN \
   (2 * (PIGEON_HTTPS_CONFIG_MAX + PIGEON_HTTPS_CONFIG_MAX / 4) + 128)
 /* PIGEON_HTTPS_CONFIG_MAX itself now lives in pigeon_internal.h -- pigeon_ws.c's
@@ -49,10 +47,10 @@ static size_t pigeon_https_body_len;
  * capsules::PigeonShadow; see pigeon_shadow_doc in pigeon.h). target_config/
  * current_config are themselves JSON objects serialized as a string on the
  * wire (e.g. "target_config":"{\"log\":true}") -- decoding them with
- * JSON_TOK_STRING (as this used to) hands back a raw, still-escaped pointer
- * into pigeon_https_body: '{\"log\":true}' is not valid JSON, so the app's
- * own json_obj_parse() on target_config always failed downstream regardless
- * of which keys/values it held. JSON_TOK_STRING_BUF actually unescapes into
+ * JSON_TOK_STRING would hand back a raw, still-escaped pointer into
+ * pigeon_https_body: '{\"log\":true}' is not valid JSON, so the app's own
+ * json_obj_parse() on target_config would fail downstream regardless of
+ * which keys/values it held. JSON_TOK_STRING_BUF actually unescapes into
  * a fixed-size buffer instead, so these are plain arrays (not pointers) and
  * this whole struct is a static instance (not a local), decoded into
  * directly -- pigeon_shadow_doc's target_config/current_config pointers
@@ -120,9 +118,9 @@ static int pigeon_https_parse_endpoint(void) {
 }
 
 static int pigeon_https_connect(void) {
-  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
-   * records for this host, and a hard-coded v4 hint used to fail the
-   * resolve outright -- every request -EHOSTUNREACH, no fallback. Below,
+  /* AF_UNSPEC, not AF_INET: a hard-coded v4 hint fails the resolve outright
+   * on an IPv6-only cellular PDN, which hands back only AAAA records for
+   * this host -- every request -EHOSTUNREACH, no fallback. Below,
    * each candidate the resolver returns (in its own ranked order, RFC
    * 6724) gets a real connect attempt; the loop moves on to the next one
    * on any failure instead of giving up on the first. */
@@ -257,7 +255,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   /* dovecote's get_shadow_device() does auth_header.strip_prefix("Bearer
    * ") -- CONFIG_PIGEON_TOKEN is the raw opaque bearer credential (not a
    * JWT), so the prefix is added here, not stored in the token itself (a
-   * bare token with no prefix produced a 401 here before this was added). */
+   * bare token with no prefix produces a 401 here). */
   snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
   const char *headers[] = {auth_header, NULL};
 
@@ -349,8 +347,8 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
   /* body arrives pre-escaped and pre-framed (one flat JSON object of every
    * pending key) from pigeon_core.c's pigeon_telemetry_flush() -- this
    * transport just moves the bytes, same as pigeon_transport_upload_logs()
-   * below. The per-key pigeon_json_escape() scratch that used to live here
-   * moved to pigeon_core.c along with the body building. */
+   * below. pigeon_json_escape() and the body building live in
+   * pigeon_core.c, not here. */
   struct http_request req = {
       .method = HTTP_POST,
       .url = url,

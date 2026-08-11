@@ -10,9 +10,8 @@
 
 /*
  * Per-slot caps (buffer sizes, including the NUL) on one pending telemetry
- * key/value in pigeon_core.c's batched store -- the same 32/128 limits the
- * old single-slot PIGEON_SHADOW_KEY_MAX/PIGEON_SHADOW_VAL_MAX carried, moved
- * here so the body-size math below (shared with the transports) can see them.
+ * key/value in pigeon_core.c's batched store, kept here so the body-size
+ * math below (shared with the transports) can see them.
  */
 #define PIGEON_TELEMETRY_KEY_MAX 32
 #define PIGEON_TELEMETRY_VAL_MAX 128
@@ -56,10 +55,9 @@ const struct pigeon_coap_config *pigeon_active_coap_config(void);
  * (0x00-0x1F), so an arbitrary caller string (a shadow telemetry key/val,
  * see pigeon_set_shadow_param()) can't break out of the JSON string it's
  * embedded in, or otherwise produce invalid JSON. Truncates rather than
- * overflows if out is too small. Implemented once in pigeon_core.c --
- * pigeon_https.c and pigeon_coap.c each used to carry their own identical
- * copy of this; pigeon_ws.c would have made a third, so this was promoted
- * out instead.
+ * overflows if out is too small. Implemented once in pigeon_core.c and
+ * shared by pigeon_https.c and pigeon_coap.c rather than each keeping its
+ * own identical copy -- pigeon_ws.c would otherwise have needed a third.
  */
 size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
 

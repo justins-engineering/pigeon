@@ -1,6 +1,6 @@
 /*
- * Persistent WebSocket push channel: GET <CONFIG_PIGEON_ENDPOINT>/ws (dovecote
- * task #32). Deliberately NOT a transport module like pigeon_https.c/
+ * Persistent WebSocket push channel: GET <CONFIG_PIGEON_ENDPOINT>/ws.
+ * Deliberately NOT a transport module like pigeon_https.c/
  * pigeon_coap.c -- it defines none of pigeon_shadow_get/pigeon_shadow_report/
  * pigeon_transport_*. It owns a persistent connection (the transports open
  * one socket per request and close it), a dedicated worker thread (the
@@ -105,27 +105,25 @@ K_MUTEX_DEFINE(pigeon_ws_lock);
 
 /*
  * Dedicated lock for the actual network write (websocket_send_msg()) --
- * deliberately separate from pigeon_ws_lock above. An earlier revision of
- * this file held pigeon_ws_lock itself across the blocking send, which
- * meant every state read (pigeon_ws_connected(), pigeon_ws_stop(), the
- * worker's own loop) queued up behind a single slow network write (up to
- * PIGEON_WS_SEND_TIMEOUT_MS). Splitting the locks means pigeon_ws_lock is
- * now only ever held for brief, non-blocking struct reads/writes, and
- * pigeon_ws_tx_lock serializes concurrent senders (the worker's pings and
- * protocol-level pong-echoes vs. the app thread's pigeon_ws_report_telemetry())
- * without blocking anything else.
+ * deliberately separate from pigeon_ws_lock above. Holding pigeon_ws_lock
+ * itself across the blocking send would queue every state read
+ * (pigeon_ws_connected(), pigeon_ws_stop(), the worker's own loop) behind
+ * a single slow network write (up to PIGEON_WS_SEND_TIMEOUT_MS). Splitting
+ * the locks keeps pigeon_ws_lock held only for brief, non-blocking struct
+ * reads/writes, and pigeon_ws_tx_lock serializes concurrent senders (the
+ * worker's pings and protocol-level pong-echoes vs. the app thread's
+ * pigeon_ws_report_telemetry()) without blocking anything else.
  *
- * This reopens a narrower hazard the two-lock split would otherwise cause:
- * with the send no longer covered by pigeon_ws_lock, a concurrent
- * pigeon_ws_stop()/pigeon_ws_teardown() could zsock_close() a live fd out
- * from under an in-progress websocket_send_msg() on that same fd. Fixed by
- * having pigeon_ws_stop()/pigeon_ws_teardown() also take pigeon_ws_tx_lock
- * around their actual close calls (never nested with pigeon_ws_lock --
- * each function always fully releases one lock before acquiring the
- * other, so there is no lock-ordering/deadlock hazard), so a close always
- * waits for any in-flight send to finish first. That wait is now bounded
- * (see pigeon_ws_open_tls_socket()'s SO_SNDTIMEO) rather than the
- * previously-unbounded K_FOREVER default.
+ * The narrower hazard this creates: with the send no longer covered by
+ * pigeon_ws_lock, a concurrent pigeon_ws_stop()/pigeon_ws_teardown() could
+ * zsock_close() a live fd out from under an in-progress
+ * websocket_send_msg() on that same fd. pigeon_ws_stop()/
+ * pigeon_ws_teardown() therefore also take pigeon_ws_tx_lock around their
+ * actual close calls (never nested with pigeon_ws_lock -- each function
+ * always fully releases one lock before acquiring the other, so there is
+ * no lock-ordering/deadlock hazard), so a close always waits for any
+ * in-flight send to finish first. That wait is bounded by SO_SNDTIMEO
+ * (see pigeon_ws_open_tls_socket()), not K_FOREVER.
  */
 K_MUTEX_DEFINE(pigeon_ws_tx_lock);
 
@@ -146,9 +144,9 @@ static char pigeon_ws_path[PIGEON_WS_PATH_MAX];
 static bool pigeon_ws_endpoint_parsed;
 
 /* websocket_request.tmp_buf: HTTP upgrade response + frame parse scratch,
- * must stay valid for the whole connection (Zephyr reuses it as ctx->recv_buf
- * internally -- confirmed in zephyr/subsys/net/lib/websocket/websocket.c,
- * not just inferred from the header doc), hence static, never stack. */
+ * must stay valid for the whole connection (Zephyr reuses it as
+ * ctx->recv_buf internally, per zephyr/subsys/net/lib/websocket/websocket.c),
+ * hence static, never stack. */
 static uint8_t pigeon_ws_scratch[CONFIG_PIGEON_WS_RX_BUF_SIZE];
 
 /* Buffer we read decoded message payloads into via websocket_recv_msg().
@@ -162,7 +160,8 @@ static uint8_t pigeon_ws_rx_buf[CONFIG_PIGEON_WS_RX_BUF_SIZE];
  * pigeon_shadow_wire -- see PIGEON_HTTPS_CONFIG_MAX in pigeon_internal.h for
  * why the config caps are shared). JSON_TOK_STRING_BUF (not JSON_TOK_STRING)
  * for the two configs: they're JSON-in-a-JSON-string on the wire and must be
- * unescaped in place, same lesson as pigeon_https.c's commit f076a7e.
+ * unescaped in place, same reasoning as pigeon_https.c's pigeon_shadow_wire
+ * (see its own comment for why).
  */
 struct pigeon_ws_shadow_wire {
   int32_t target_version;
@@ -208,7 +207,7 @@ static const struct json_obj_descr pigeon_ws_frame_descr[] = {
 #define PIGEON_WS_SHELL_CMD_MAX        128
 
 /*
- * Wire shape of an inbound shell_cmd frame's request_id/cmd (task #34).
+ * Wire shape of an inbound shell_cmd frame's request_id/cmd.
  * Deliberately a separate struct/descriptor from pigeon_ws_frame_wire/
  * pigeon_ws_frame_descr above rather than folding these two fields into
  * that generic struct -- that one stays "type + whichever domain object
@@ -284,9 +283,9 @@ static int pigeon_ws_parse_endpoint(void) {
  * pigeon_https.c's pigeon_https_connect(): same sec_tag, same SNI, same
  * IPPROTO_TLS_1_2. Returns the socket fd (>=0) or a negative errno. */
 static int pigeon_ws_open_tls_socket(void) {
-  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
-   * records for this host, and a hard-coded v4 hint used to fail the
-   * resolve outright -- every request -EHOSTUNREACH, no fallback. Below,
+  /* AF_UNSPEC, not AF_INET: a hard-coded v4 hint fails the resolve outright
+   * on an IPv6-only cellular PDN, which hands back only AAAA records for
+   * this host -- every request -EHOSTUNREACH, no fallback. Below,
    * each candidate the resolver returns (in its own ranked order, RFC
    * 6724) gets a real connect attempt; the loop moves on to the next one
    * on any failure instead of giving up on the first. */
@@ -364,9 +363,9 @@ static int pigeon_ws_open_tls_socket(void) {
    * websocket_send_msg() calls, but Zephyr's *internal* CLOSE-frame echo
    * inside websocket_internal_disconnect() (zephyr/subsys/net/lib/websocket/
    * websocket.c), which unconditionally requests SYS_FOREVER_MS and has no
-   * way for a caller to override that per-call. Traced the actual socket
-   * layer (zephyr/subsys/net/lib/sockets/sockets_inet.c:zsock_sendmsg_ctx()):
-   * the first send attempt inside websocket.c's sendmsg_all() is a plain
+   * way for a caller to override that per-call. In the socket layer
+   * (zephyr/subsys/net/lib/sockets/sockets_inet.c:zsock_sendmsg_ctx()), the
+   * first send attempt inside websocket.c's sendmsg_all() is a plain
    * blocking zsock_sendmsg() with no DONTWAIT flag, and that path ignores
    * whatever k_timeout the *caller* wanted entirely -- it pulls its actual
    * timeout from this socket's own SO_SNDTIMEO option (defaulting to
@@ -379,7 +378,7 @@ static int pigeon_ws_open_tls_socket(void) {
    * CONFIG_NET_CONTEXT_SNDTIMEO must be enabled for this option to have
    * any effect at all (see zephyr/Kconfig: CONFIG_PIGEON_WS selects it) --
    * silently a no-op otherwise, so failure here is logged but not fatal
-   * to the connection (falls back to the pre-existing, less-safe default).
+   * to the connection (falls back to the less-safe default).
    */
   struct zsock_timeval sndtimeo = {
       .tv_sec = PIGEON_WS_SEND_TIMEOUT_MS / 1000,
@@ -460,13 +459,12 @@ static int pigeon_ws_connect_once(void) {
  * caller sees -1 and does nothing.
  *
  * Always calls websocket_disconnect(ws_sock) itself, unconditionally, when
- * ws_sock is still live -- an earlier revision skipped this on the
- * server-initiated-CLOSE path, trusting that Zephyr's own
- * websocket_recv_msg() had already called websocket_internal_disconnect()
- * (and therefore websocket_context_unref()) internally for us. That trust
- * was misplaced: read the vendored source
+ * ws_sock is still live -- it is not safe to trust that Zephyr's own
+ * websocket_recv_msg() has already called websocket_internal_disconnect()
+ * (and therefore websocket_context_unref()) internally for us on a
+ * server-initiated CLOSE. The vendored source
  * (zephyr/subsys/net/lib/websocket/websocket.c, the check right before its
- * internal disconnect call) --
+ * internal disconnect call) reads:
  *
  *   if (ctx->message_type == WEBSOCKET_FLAG_CLOSE) {
  *           return websocket_internal_disconnect(ctx);
@@ -476,27 +474,26 @@ static int pigeon_ws_connect_once(void) {
  * 5.5.1 forbids fragmenting control frames, so any real CLOSE frame from a
  * compliant peer always also carries WEBSOCKET_FLAG_FINAL, making
  * ctx->message_type WEBSOCKET_FLAG_CLOSE|WEBSOCKET_FLAG_FINAL (0x09), which
- * this check can never match (0x09 != 0x08) -- confirmed empirically
- * against a real close from dovecote (a native_sim harness with temporary
- * ref/unref tracing showed exactly one ref() and zero unref() calls across
- * a full connect -> server-close -> reconnect-attempts cycle). In
- * practice, the library's own internal-disconnect path on this branch is
- * dead code for every real peer, and previously trusting it here silently
- * leaked the sole CONFIG_WEBSOCKET_MAX_CONTEXTS context slot on every
- * server-initiated close -- reproduced as a permanent post-churn
- * "upgrade handshake failed: -17" (EEXIST, websocket_find() matching the
- * leaked context's stale real_sock against a reused fd number) wedging
- * every subsequent reconnect attempt.
+ * this check can never match (0x09 != 0x08) -- a native_sim ref/unref
+ * trace showed exactly one ref() and zero unref() across a full connect ->
+ * server-close -> reconnect cycle. In practice, the library's own
+ * internal-disconnect path on this branch is dead code for every real
+ * peer. Relying on it here would silently leak the sole
+ * CONFIG_WEBSOCKET_MAX_CONTEXTS context slot on every server-initiated
+ * close -- reproducible as a permanent post-churn "upgrade handshake
+ * failed: -17" (EEXIST, websocket_find() matching the leaked context's
+ * stale real_sock against a reused fd number) wedging every subsequent
+ * reconnect attempt.
  *
  * websocket_disconnect() is exactly zsock_close(ws_sock): sends a CLOSE
  * frame over real_sock, then unconditionally unrefs the library's own
  * context via the *outer* close_vmeth path (unaffected by the buggy
  * equality check above, which only guards the recv-side internal-disconnect
  * shortcut) -- this is what actually frees the slot. It does not touch
- * real_sock, which the library never closes in any path (confirmed against
- * the vendored source and its own websocket_client sample, which always
- * closes both fds itself on every exit path), so that's still always
- * closed here separately.
+ * real_sock, which the library never closes in any path (per the vendored
+ * source and its own websocket_client sample, which always closes both
+ * fds itself on every exit path), so that's still always closed here
+ * separately.
  *
  * Calling websocket_disconnect() here even when the library's own recv-path
  * disconnect DID somehow run (a non-compliant peer sending an unfragmented
@@ -504,8 +501,8 @@ static int pigeon_ws_connect_once(void) {
  * possible) would double-unref an already-0 refcount. Not guarded against:
  * no real-world WS server does this, dovecote's frame close codes are all
  * ordinary FIN-set control frames, and the alternative (silently leaking
- * the single context slot on every real close, as the previous revision
- * did) is a strictly worse, already-proven failure mode.
+ * the single context slot on every real close) is a strictly worse failure
+ * mode.
  */
 static void pigeon_ws_teardown(void) {
   k_mutex_lock(&pigeon_ws_lock, K_FOREVER);
@@ -815,9 +812,9 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
 #endif /* CONFIG_PIGEON_SHELL */
 
   /* Forward-compat: dovecote's frame dispatch may grow new types (e.g.
-   * task #34's remote shell, when CONFIG_PIGEON_SHELL is off) without
-   * breaking already-deployed devices -- ignore anything we don't
-   * recognize rather than treating it as an error. */
+   * the remote shell, when CONFIG_PIGEON_SHELL is off) without breaking
+   * already-deployed devices -- ignore anything we don't recognize rather
+   * than treating it as an error. */
   LOG_DBG("WS: ignoring frame of unhandled type '%s'", pigeon_ws_frame.type);
 }
 
@@ -826,26 +823,20 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
  * doubling from pigeon_ws.reconnect_delay_sec, capped at
  * CONFIG_PIGEON_WS_RECONNECT_MAX_DELAY_SEC, +-25% jitter.
  *
- * The design this file implements called for a close-code-aware policy
- * table (4008 rate-limit -> wait out one window; 4009 replaced-by-another-
- * connection -> slow start; everything else -> this same normal backoff --
- * an earlier revision had PIGEON_WS_RATE_LIMIT_WINDOW_SEC/
- * PIGEON_WS_REPLACED_MIN_DELAY_SEC constants for this, since removed along
- * with the dead code that used them). That turned out not to be safely implementable
- * against the vendored zephyr/subsys/net/lib/websocket/websocket.c: on a
- * server-initiated CLOSE, websocket_recv_msg() runs its own
- * websocket_internal_disconnect() (echoes the CLOSE, unrefs its context)
- * and returns *that* call's result -- not the number of close-payload
- * bytes it copied into our buffer. payload.count (the actual length) is
- * computed internally but never surfaced to the caller on this path, so
- * there is no reliable way via the public API to know whether buf[0:2)
- * is a real close code or stale bytes left over from a previous message.
- * Per this design's own explicitly pre-approved fallback for exactly this
- * risk ("if close-code extraction from Zephyr's recv path proves
- * impractical, collapse all close codes to normal backoff -- only the
- * 4009 slow-start distinction is lost, and jittered exponential backoff
- * still bounds flapping"), every server-initiated close is therefore
- * treated identically to a network-loss/-ENOTCONN/pong-timeout drop.
+ * A close-code-aware policy (4008 rate-limit -> wait out one window; 4009
+ * replaced-by-another-connection -> slow start; everything else -> this
+ * same normal backoff) is not safely implementable against the vendored
+ * zephyr/subsys/net/lib/websocket/websocket.c: on a server-initiated
+ * CLOSE, websocket_recv_msg() runs its own websocket_internal_disconnect()
+ * (echoes the CLOSE, unrefs its context) and returns *that* call's result
+ * -- not the number of close-payload bytes it copied into our buffer.
+ * payload.count (the actual length) is computed internally but never
+ * surfaced to the caller on this path, so there is no reliable way via the
+ * public API to know whether buf[0:2) is a real close code or stale bytes
+ * left over from a previous message. Every server-initiated close is
+ * therefore treated identically to a network-loss/-ENOTCONN/pong-timeout
+ * drop -- only the 4009 slow-start distinction is lost, and jittered
+ * exponential backoff still bounds flapping either way.
  */
 static uint32_t pigeon_ws_next_backoff_sec(void) {
   uint32_t delay_sec;
@@ -994,15 +985,15 @@ static void pigeon_ws_thread_fn(void *p1, void *p2, void *p3) {
         /*
          * Server-initiated close. message_type is the only trustworthy
          * signal of this -- websocket_recv_msg()'s return value here is
-         * NOT reliably -ENOTCONN (an earlier revision assumed it was; see
-         * git history), and the library's own attempt to auto-tear-down
-         * its context on this path is itself unreliable (an exact-equality
-         * bug in its CLOSE check makes that internal call unreachable for
-         * any real, FIN-set CLOSE frame -- see pigeon_ws_teardown()'s docs
-         * for the full trace). pigeon_ws_teardown() below always calls
-         * websocket_disconnect() itself now, regardless of what the
-         * library may or may not have already done internally, so this
-         * path no longer needs to track or assume anything about that.
+         * not reliably -ENOTCONN, and the library's own attempt to
+         * auto-tear-down its context on this path is itself unreliable (an
+         * exact-equality bug in its CLOSE check makes that internal call
+         * unreachable for any real, FIN-set CLOSE frame -- see
+         * pigeon_ws_teardown()'s docs for the full trace).
+         * pigeon_ws_teardown() below always calls websocket_disconnect()
+         * itself, regardless of what the library may or may not have
+         * already done internally, so this path doesn't need to track or
+         * assume anything about that.
          *
          * The close *code* is deliberately not read out of
          * pigeon_ws_rx_buf here: the actual close-payload length
@@ -1032,14 +1023,14 @@ static void pigeon_ws_thread_fn(void *p1, void *p2, void *p3) {
 
       if (msg_type & WEBSOCKET_FLAG_PING) {
         /* Protocol-level RFC 6455 ping -- Zephyr's library does NOT
-         * auto-pong these (confirmed: no code path in websocket.c sends
+         * auto-pong these (no code path in websocket.c sends
          * WEBSOCKET_OPCODE_PONG except in direct response to our own
          * explicit send), so echo it back ourselves. The Cloudflare edge
          * may emit these even though dovecote's app layer never does.
          * Routed through pigeon_ws_send_locked() (same TX lock as every
          * other sender on this socket) rather than a bare
-         * websocket_send_msg() call -- this used to be the one unguarded
-         * sender, a latent race with pigeon_ws_send_text() on the same fd. */
+         * websocket_send_msg() call, to avoid a race with
+         * pigeon_ws_send_text() on the same fd. */
         k_mutex_lock(&pigeon_ws_lock, K_FOREVER);
         int echo_sock = pigeon_ws.ws_sock;
         k_mutex_unlock(&pigeon_ws_lock);
@@ -1163,19 +1154,16 @@ int pigeon_ws_stop(void) {
 
   /*
    * Capture-AND-CLEAR under this same lock, before closing outside it --
-   * mirrors pigeon_ws_teardown()'s protocol exactly. Fixed from an earlier
-   * revision that closed from these local copies without ever writing -1
-   * back into pigeon_ws.ws_sock/real_sock: the worker thread's own
-   * pigeon_ws_teardown() call, invoked unconditionally once the forced
-   * close below unblocks its poll/recv and its inner loop breaks, would
-   * otherwise re-read the same stale fd numbers and close them a *second*
-   * time -- on fds Zephyr may have already freed for reuse by then (e.g.
-   * the app's own transient HTTPS request socket, which this design
-   * documents as running concurrently with the persistent WS socket).
-   * With the clear happening here first, that second call sees -1/-1 and
-   * correctly no-ops, exactly as pigeon_ws_teardown()'s own docstring
-   * describes (this was previously false for this function specifically,
-   * even though pigeon_ws_teardown() itself always followed the pattern).
+   * mirrors pigeon_ws_teardown()'s protocol exactly. Closing from these
+   * local copies without writing -1 back into pigeon_ws.ws_sock/real_sock
+   * would leave the worker thread's own pigeon_ws_teardown() call (invoked
+   * unconditionally once the forced close below unblocks its poll/recv and
+   * its inner loop breaks) re-reading the same stale fd numbers and
+   * closing them a *second* time -- on fds Zephyr may have already freed
+   * for reuse by then (e.g. the app's own transient HTTPS request socket,
+   * which this design documents as running concurrently with the
+   * persistent WS socket). With the clear happening here first, that
+   * second call sees -1/-1 and correctly no-ops.
    */
   pigeon_ws.ws_sock = -1;
   pigeon_ws.real_sock = -1;
@@ -1190,12 +1178,12 @@ int pigeon_ws_stop(void) {
    * this waits for any in-flight send on these fds (this worker's own
    * ping, or a concurrent app-thread pigeon_ws_report_telemetry() call)
    * to finish first, rather than closing a live fd out from under it.
-   * That wait is now bounded by SO_SNDTIMEO (pigeon_ws_open_tls_socket()),
-   * not indefinite -- previously, websocket_disconnect()'s internal
-   * CLOSE-frame echo requested SYS_FOREVER_MS with nothing capping the
-   * underlying socket's own send timeout, so a stalled/half-dead TCP path
-   * could hang this function (and therefore the shadow "reboot": true
-   * path that calls it right before sys_reboot()) indefinitely.
+   * That wait is bounded by SO_SNDTIMEO (pigeon_ws_open_tls_socket()), not
+   * indefinite: without it, websocket_disconnect()'s internal CLOSE-frame
+   * echo requests SYS_FOREVER_MS with nothing capping the underlying
+   * socket's own send timeout, so a stalled/half-dead TCP path could hang
+   * this function (and therefore the shadow "reboot": true path that
+   * calls it right before sys_reboot()) indefinitely.
    *
    * websocket_disconnect() only sends a CLOSE and unrefs the library's own
    * context, it never touches real_sock, so that always needs its own
