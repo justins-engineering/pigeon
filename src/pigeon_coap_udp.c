@@ -62,73 +62,106 @@ static int pigeon_coap_udp_connect(void) {
     return err;
   }
 
+  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
+   * records for this host, and a hard-coded v4 hint used to make
+   * zsock_getaddrinfo() itself fail here -- every exchange -EHOSTUNREACH,
+   * no fallback. Below, each candidate the resolver returns (in its own
+   * ranked order, RFC 6724) gets a real connect attempt; the loop moves on
+   * to the next one on any failure instead of giving up on the first. */
   struct zsock_addrinfo hints = {
-      .ai_family = AF_INET,
+      .ai_family = AF_UNSPEC,
       .ai_socktype = SOCK_DGRAM,
   };
-  struct zsock_addrinfo *res;
+  struct zsock_addrinfo *addr_list;
 
-  err = zsock_getaddrinfo(pigeon_coap_host, pigeon_coap_port, &hints, &res);
+  err = zsock_getaddrinfo(pigeon_coap_host, pigeon_coap_port, &hints, &addr_list);
 
   if (err) {
     LOG_ERR("Failed to resolve %s: %d", pigeon_coap_host, err);
     return -EHOSTUNREACH;
   }
 
-  int sock = zsock_socket(res->ai_family, SOCK_DGRAM, IPPROTO_DTLS_1_2);
-
-  if (sock < 0) {
-    LOG_ERR("Failed to create DTLS socket: %d", -errno);
-    zsock_freeaddrinfo(res);
-    return -errno;
-  }
-
-  sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_COAP_SEC_TAG};
-
-  err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
-  if (err) {
-    LOG_ERR("Failed to set DTLS sec_tag %d: %d", CONFIG_PIGEON_COAP_SEC_TAG, -errno);
-    goto cleanup;
-  }
-
-#if defined(CONFIG_PIGEON_COAP_DTLS_CID)
-  /* Offer RFC 9146 Connection ID as a client: an empty own CID ("echo
-   * yours, don't send me one") is all a NAT-traversing client needs -- see
-   * this option's help in zephyr/Kconfig for the per-backend support
-   * matrix. Unsupported stacks (mbedTLS built without
-   * MBEDTLS_SSL_DTLS_CONNECTION_ID, pre-1.3.5 nRF9160 modem firmware)
-   * fail here, deliberately non-fatally: the session still works, it just
-   * won't survive an address rebind without a re-handshake. */
-  int cid_val = TLS_DTLS_CID_SUPPORTED;
-
-  err = zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_CID, &cid_val, sizeof(cid_val));
-  if (err) {
-    LOG_WRN("DTLS CID unsupported on this stack (%d); continuing without", -errno);
-  }
-#endif
-
   /* SNI/hostname verification is an X.509 concept and meaningless for PSK
-   * ciphersuites -- same reasoning as the TCP transport's connect path. */
+   * ciphersuites -- same reasoning as the TCP transport's connect path.
+   * Family-independent, so computed once rather than per candidate. */
   const struct pigeon_coap_config *coap_cfg = pigeon_active_coap_config();
   bool using_psk = coap_cfg->tls_psk_identity && coap_cfg->tls_psk_secret;
+  int sock = -1;
+  int last_errno = EHOSTUNREACH;
 
-  if (!using_psk) {
-    err = zsock_setsockopt(
-        sock, SOL_TLS, TLS_HOSTNAME, pigeon_coap_host, strlen(pigeon_coap_host)
-    );
-    if (err) {
-      LOG_ERR("Failed to set TLS hostname: %d", -errno);
-      goto cleanup;
+  for (struct zsock_addrinfo *res = addr_list; res; res = res->ai_next) {
+    sock = zsock_socket(res->ai_family, SOCK_DGRAM, IPPROTO_DTLS_1_2);
+
+    if (sock < 0) {
+      LOG_WRN("Failed to create DTLS socket (family %d): %d", res->ai_family, -errno);
+      last_errno = errno;
+      continue;
     }
+
+    sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_COAP_SEC_TAG};
+
+    err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
+    if (err) {
+      LOG_ERR("Failed to set DTLS sec_tag %d: %d", CONFIG_PIGEON_COAP_SEC_TAG, -errno);
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+#if defined(CONFIG_PIGEON_COAP_DTLS_CID)
+    /* Offer RFC 9146 Connection ID as a client: an empty own CID ("echo
+     * yours, don't send me one") is all a NAT-traversing client needs --
+     * see this option's help in zephyr/Kconfig for the per-backend support
+     * matrix. Unsupported stacks (mbedTLS built without
+     * MBEDTLS_SSL_DTLS_CONNECTION_ID, pre-1.3.5 nRF9160 modem firmware)
+     * fail here, deliberately non-fatally: the session still works, it
+     * just won't survive an address rebind without a re-handshake. */
+    int cid_val = TLS_DTLS_CID_SUPPORTED;
+
+    err = zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_CID, &cid_val, sizeof(cid_val));
+    if (err) {
+      LOG_WRN("DTLS CID unsupported on this stack (%d); continuing without", -errno);
+    }
+#endif
+
+    if (!using_psk) {
+      err = zsock_setsockopt(
+          sock, SOL_TLS, TLS_HOSTNAME, pigeon_coap_host, strlen(pigeon_coap_host)
+      );
+      if (err) {
+        LOG_ERR("Failed to set TLS hostname: %d", -errno);
+        last_errno = errno;
+        zsock_close(sock);
+        sock = -1;
+        continue;
+      }
+    }
+
+    /* Blocking DTLS handshake. */
+    err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
+    if (err) {
+      LOG_WRN(
+          "DTLS handshake with %s (family %d) failed: %d, trying next address",
+          pigeon_coap_host, res->ai_family, -errno
+      );
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    break;
   }
 
-  /* Blocking DTLS handshake. */
-  err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
-  zsock_freeaddrinfo(res);
-  if (err) {
-    LOG_ERR("DTLS handshake with %s failed: %d", pigeon_coap_host, -errno);
-    zsock_close(sock);
-    return -errno;
+  zsock_freeaddrinfo(addr_list);
+
+  if (sock < 0) {
+    LOG_ERR(
+        "DTLS handshake with %s failed on every resolved address: %d", pigeon_coap_host,
+        last_errno
+    );
+    return -last_errno;
   }
 
 #if defined(CONFIG_PIGEON_COAP_DTLS_CID)
@@ -173,11 +206,6 @@ static int pigeon_coap_udp_connect(void) {
   pigeon_coap_udp_sock = sock;
 
   return 0;
-
-cleanup:
-  zsock_freeaddrinfo(res);
-  zsock_close(sock);
-  return -errno;
 }
 
 /* Sends an Empty ACK for the given received CON message. Best-effort: a

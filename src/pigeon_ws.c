@@ -284,47 +284,79 @@ static int pigeon_ws_parse_endpoint(void) {
  * pigeon_https.c's pigeon_https_connect(): same sec_tag, same SNI, same
  * IPPROTO_TLS_1_2. Returns the socket fd (>=0) or a negative errno. */
 static int pigeon_ws_open_tls_socket(void) {
+  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
+   * records for this host, and a hard-coded v4 hint used to fail the
+   * resolve outright -- every request -EHOSTUNREACH, no fallback. Below,
+   * each candidate the resolver returns (in its own ranked order, RFC
+   * 6724) gets a real connect attempt; the loop moves on to the next one
+   * on any failure instead of giving up on the first. */
   struct zsock_addrinfo hints = {
-      .ai_family = AF_INET,
+      .ai_family = AF_UNSPEC,
       .ai_socktype = SOCK_STREAM,
   };
-  struct zsock_addrinfo *res;
+  struct zsock_addrinfo *addr_list;
 
-  int err = zsock_getaddrinfo(pigeon_ws_host, "443", &hints, &res);
+  int err = zsock_getaddrinfo(pigeon_ws_host, "443", &hints, &addr_list);
 
   if (err) {
     LOG_ERR("WS: failed to resolve %s: %d", pigeon_ws_host, err);
     return -EHOSTUNREACH;
   }
 
-  int sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
+  int sock = -1;
+  int last_errno = EHOSTUNREACH;
+
+  for (struct zsock_addrinfo *res = addr_list; res; res = res->ai_next) {
+    sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
+
+    if (sock < 0) {
+      LOG_WRN("WS: failed to create TLS socket (family %d): %d", res->ai_family, -errno);
+      last_errno = errno;
+      continue;
+    }
+
+    sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_HTTPS_SEC_TAG};
+
+    err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
+    if (err) {
+      LOG_ERR("WS: failed to set TLS sec_tag %d: %d", CONFIG_PIGEON_HTTPS_SEC_TAG, -errno);
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    err = zsock_setsockopt(sock, SOL_TLS, TLS_HOSTNAME, pigeon_ws_host, strlen(pigeon_ws_host));
+    if (err) {
+      LOG_ERR("WS: failed to set TLS hostname: %d", -errno);
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
+    if (err) {
+      LOG_WRN(
+          "WS: failed to connect to %s (family %d): %d, trying next address", pigeon_ws_host,
+          res->ai_family, -errno
+      );
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    break;
+  }
+
+  zsock_freeaddrinfo(addr_list);
 
   if (sock < 0) {
-    LOG_ERR("WS: failed to create TLS socket: %d", -errno);
-    zsock_freeaddrinfo(res);
-    return -errno;
-  }
-
-  sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_HTTPS_SEC_TAG};
-
-  err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
-  if (err) {
-    LOG_ERR("WS: failed to set TLS sec_tag %d: %d", CONFIG_PIGEON_HTTPS_SEC_TAG, -errno);
-    goto cleanup;
-  }
-
-  err = zsock_setsockopt(sock, SOL_TLS, TLS_HOSTNAME, pigeon_ws_host, strlen(pigeon_ws_host));
-  if (err) {
-    LOG_ERR("WS: failed to set TLS hostname: %d", -errno);
-    goto cleanup;
-  }
-
-  err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
-  zsock_freeaddrinfo(res);
-  if (err) {
-    LOG_ERR("WS: failed to connect to %s: %d", pigeon_ws_host, -errno);
-    zsock_close(sock);
-    return -errno;
+    LOG_ERR(
+        "WS: failed to connect to %s on every resolved address: %d", pigeon_ws_host, last_errno
+    );
+    return -last_errno;
   }
 
   /*
@@ -359,11 +391,6 @@ static int pigeon_ws_open_tls_socket(void) {
   }
 
   return sock;
-
-cleanup:
-  zsock_freeaddrinfo(res);
-  zsock_close(sock);
-  return -errno;
 }
 
 /* Performs the TLS connect + HTTP Upgrade handshake, storing the resulting

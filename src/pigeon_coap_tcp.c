@@ -33,33 +33,23 @@ static int pigeon_coap_tcp_connect(void) {
     return err;
   }
 
+  /* AF_UNSPEC, not AF_INET: an IPv6-only cellular PDN hands back only AAAA
+   * records for this host, and a hard-coded v4 hint used to fail the
+   * resolve outright -- every request -EHOSTUNREACH, no fallback. Below,
+   * each candidate the resolver returns (in its own ranked order, RFC
+   * 6724) gets a real connect attempt; the loop moves on to the next one
+   * on any failure instead of giving up on the first. */
   struct zsock_addrinfo hints = {
-      .ai_family = AF_INET,
+      .ai_family = AF_UNSPEC,
       .ai_socktype = SOCK_STREAM,
   };
-  struct zsock_addrinfo *res;
+  struct zsock_addrinfo *addr_list;
 
-  err = zsock_getaddrinfo(pigeon_coap_host, pigeon_coap_port, &hints, &res);
+  err = zsock_getaddrinfo(pigeon_coap_host, pigeon_coap_port, &hints, &addr_list);
 
   if (err) {
     LOG_ERR("Failed to resolve %s: %d", pigeon_coap_host, err);
     return -EHOSTUNREACH;
-  }
-
-  int sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
-
-  if (sock < 0) {
-    LOG_ERR("Failed to create TLS socket: %d", -errno);
-    zsock_freeaddrinfo(res);
-    return -errno;
-  }
-
-  sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_COAP_SEC_TAG};
-
-  err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
-  if (err) {
-    LOG_ERR("Failed to set TLS sec_tag %d: %d", CONFIG_PIGEON_COAP_SEC_TAG, -errno);
-    goto cleanup;
   }
 
   /* SNI/hostname verification is an X.509 concept and meaningless for PSK
@@ -67,34 +57,69 @@ static int pigeon_coap_tcp_connect(void) {
    * an actual PSK build failure: minimal PSK-only builds may not enable
    * CONFIG_MBEDTLS_X509_CRT_PARSE_C at all, and Zephyr's TLS_HOSTNAME option
    * hard-fails with -ENOPROTOOPT without it (see tls_opt_hostname_set() in
-   * subsys/net/lib/sockets/sockets_tls.c). */
+   * subsys/net/lib/sockets/sockets_tls.c). Family-independent, so computed
+   * once rather than per candidate. */
   const struct pigeon_coap_config *coap_cfg = pigeon_active_coap_config();
   bool using_psk = coap_cfg->tls_psk_identity && coap_cfg->tls_psk_secret;
+  int sock = -1;
+  int last_errno = EHOSTUNREACH;
 
-  if (!using_psk) {
-    err = zsock_setsockopt(
-        sock, SOL_TLS, TLS_HOSTNAME, pigeon_coap_host, strlen(pigeon_coap_host)
-    );
-    if (err) {
-      LOG_ERR("Failed to set TLS hostname: %d", -errno);
-      goto cleanup;
+  for (struct zsock_addrinfo *res = addr_list; res; res = res->ai_next) {
+    sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
+
+    if (sock < 0) {
+      LOG_WRN("Failed to create TLS socket (family %d): %d", res->ai_family, -errno);
+      last_errno = errno;
+      continue;
     }
+
+    sec_tag_t sec_tag_list[] = {CONFIG_PIGEON_COAP_SEC_TAG};
+
+    err = zsock_setsockopt(sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_list, sizeof(sec_tag_list));
+    if (err) {
+      LOG_ERR("Failed to set TLS sec_tag %d: %d", CONFIG_PIGEON_COAP_SEC_TAG, -errno);
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    if (!using_psk) {
+      err = zsock_setsockopt(
+          sock, SOL_TLS, TLS_HOSTNAME, pigeon_coap_host, strlen(pigeon_coap_host)
+      );
+      if (err) {
+        LOG_ERR("Failed to set TLS hostname: %d", -errno);
+        last_errno = errno;
+        zsock_close(sock);
+        sock = -1;
+        continue;
+      }
+    }
+
+    err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
+    if (err) {
+      LOG_WRN(
+          "Failed to connect to %s (family %d): %d, trying next address", pigeon_coap_host,
+          res->ai_family, -errno
+      );
+      last_errno = errno;
+      zsock_close(sock);
+      sock = -1;
+      continue;
+    }
+
+    break;
   }
 
-  err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
-  zsock_freeaddrinfo(res);
-  if (err) {
-    LOG_ERR("Failed to connect to %s: %d", pigeon_coap_host, -errno);
-    zsock_close(sock);
-    return -errno;
+  zsock_freeaddrinfo(addr_list);
+
+  if (sock < 0) {
+    LOG_ERR("Failed to connect to %s on every resolved address: %d", pigeon_coap_host, last_errno);
+    return -last_errno;
   }
 
   return sock;
-
-cleanup:
-  zsock_freeaddrinfo(res);
-  zsock_close(sock);
-  return -errno;
 }
 
 static int pigeon_coap_tcp_recv_exact(int sock, uint8_t *buf, size_t len) {
