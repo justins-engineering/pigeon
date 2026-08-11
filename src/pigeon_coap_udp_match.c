@@ -36,9 +36,18 @@ enum pigeon_coap_udp_action pigeon_coap_udp_classify(
         return PIGEON_COAP_UDP_ACTION_SEPARATED;
       }
       /* Piggybacked response (5.2.1): the ACK itself carries the
-       * response, correlated by token as well as ID. */
+       * response, correlated by token as well as ID. A conformant peer's
+       * token always matches here; a mismatched token means the peer is
+       * non-conformant, but the ID match alone already tells us this CON
+       * was received, so retransmitting it further would just burn the
+       * exchange's full backoff waiting for an ACK that already arrived.
+       * Treat it like an Empty ACK instead of dropping it: stop
+       * retransmitting and keep waiting, within the exchange deadline, for
+       * a real separate response, rather than delivering unverified
+       * content or re-sending a request the peer has already answered. */
       if (!token_matches(ex, rsp_token, rsp_tkl)) {
-        return PIGEON_COAP_UDP_ACTION_IGNORE;
+        ex->separated = true;
+        return PIGEON_COAP_UDP_ACTION_SEPARATED;
       }
       return PIGEON_COAP_UDP_ACTION_RESPONSE;
 

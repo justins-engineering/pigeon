@@ -51,18 +51,37 @@ ZTEST(coap_udp_match, test_ack_with_wrong_id_ignored) {
   zassert_equal(a, PIGEON_COAP_UDP_ACTION_IGNORE);
 }
 
-ZTEST(coap_udp_match, test_piggybacked_with_wrong_token_ignored) {
+ZTEST(coap_udp_match, test_piggybacked_with_wrong_token_separates) {
+  /* The message ID still matches, so a non-conformant peer's ACK tells us
+   * the CON was received even though its token doesn't correlate to our
+   * exchange -- stop retransmitting and wait for a real separate response
+   * instead of dropping the ACK and retransmitting into the void. */
   enum pigeon_coap_udp_action a =
       pigeon_coap_udp_classify(&ex, COAP_TYPE_ACK, CODE_CONTENT, REQ_ID, other_token, 8);
 
-  zassert_equal(a, PIGEON_COAP_UDP_ACTION_IGNORE);
+  zassert_equal(a, PIGEON_COAP_UDP_ACTION_SEPARATED);
+  zassert_true(ex.separated);
 }
 
-ZTEST(coap_udp_match, test_piggybacked_with_short_token_ignored) {
+ZTEST(coap_udp_match, test_piggybacked_with_short_token_separates) {
   enum pigeon_coap_udp_action a =
       pigeon_coap_udp_classify(&ex, COAP_TYPE_ACK, CODE_CONTENT, REQ_ID, req_token, 4);
 
-  zassert_equal(a, PIGEON_COAP_UDP_ACTION_IGNORE);
+  zassert_equal(a, PIGEON_COAP_UDP_ACTION_SEPARATED);
+  zassert_true(ex.separated);
+}
+
+ZTEST(coap_udp_match, test_piggybacked_wrong_token_stops_retransmit_then_delivers) {
+  /* The full non-conformant-peer sequence this arm exists for: a
+   * mismatched-token ACK first, which must not be treated as delivery,
+   * followed by the real separate CON response correlated by token. */
+  enum pigeon_coap_udp_action a =
+      pigeon_coap_udp_classify(&ex, COAP_TYPE_ACK, CODE_CONTENT, REQ_ID, other_token, 8);
+
+  zassert_equal(a, PIGEON_COAP_UDP_ACTION_SEPARATED);
+
+  a = pigeon_coap_udp_classify(&ex, COAP_TYPE_CON, CODE_CONTENT, RSP_ID, req_token, 8);
+  zassert_equal(a, PIGEON_COAP_UDP_ACTION_RESPONSE_ACK);
 }
 
 ZTEST(coap_udp_match, test_empty_ack_separates) {
