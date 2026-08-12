@@ -78,7 +78,7 @@ if PIGEON_COAP_TRANSPORT_UDP
 
 config PIGEON_COAP_DTLS_CID
   bool "Request DTLS Connection ID (RFC 9146) on the CoAP DTLS session"
-  default n
+  default y
   help
     Offers the DTLS Connection ID extension as a client (an empty CID:
     "I'll echo yours, don't send me one" -- TLS_DTLS_CID_SUPPORTED), so a
@@ -89,13 +89,13 @@ config PIGEON_COAP_DTLS_CID
     rebound NAT port is unattributable and forces a full re-handshake;
     with CID the same session simply keeps working.
 
-    Off by default because the PidgeIoT CoAP terminator cannot negotiate
-    CID yet (no production server-side DTLS stack available to it
-    implements RFC 9146) -- an un-negotiated offer is harmless on the
-    wire, but a default shouldn't advertise a capability the platform
-    can't honor. Flip on once the server side gains CID support; the
-    device plumbing below is complete and verified against CID-capable
-    third-party servers.
+    On by default now that the PidgeIoT CoAP terminator negotiates CID
+    server-side (loft's mbedTLS DTLS listener --
+    docs/infra/coap-cid-design.md in the pidgeiot repo is the decision
+    record). An un-negotiated offer is a no-op on the wire, so builds
+    pointed at an older or third-party server keep working unchanged;
+    disable only to shave the extension bytes from the ClientHello on a
+    deployment whose server will never speak CID.
 
     Device-side support: native Zephyr sockets wire this into mbedTLS's
     own RFC 9146 support (CONFIG_MBEDTLS_SSL_DTLS_CONNECTION_ID must be
