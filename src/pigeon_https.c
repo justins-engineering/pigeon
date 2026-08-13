@@ -2,6 +2,7 @@
 #include <pigeon.h>
 #include <string.h>
 #include <zephyr/data/json.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/http/client.h>
 #include <zephyr/net/socket.h>
@@ -29,6 +30,37 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * shadow_update frame decode (see zephyr/Kconfig: CONFIG_PIGEON_WS) shares the
  * same cap on target_config/current_config, so one file owns the definition. */
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
+
+/* Serializes every request this module issues. All the state below --
+ * the lazily-parsed host/path, the HTTP parser's scratch buffer, the
+ * accumulated body and its length, the decoded shadow -- is module-global
+ * and was shared with no lock at all across two genuinely concurrent
+ * callers: the log backend uploads from the system workqueue (cooperative,
+ * higher priority than any pigeon thread) while the poller thread fetches
+ * and reports the shadow. The workqueue preempting the poller mid-request
+ * left the poller parsing a body some other request had overwritten, or a
+ * body length belonging to neither.
+ *
+ * It also gives the device one TLS handshake at a time. On an nRF91 with
+ * the CA in the modem's credential store these sockets are offloaded, so
+ * the handshake runs inside the modem -- which permits several concurrent
+ * TLS *sessions* but only one handshake in flight, and reports the
+ * violation as a spurious "sec_tag not found" on an otherwise valid tag.
+ *
+ * Held for one connect/request/close only, never across a multi-chunk
+ * download, so a FOTA transfer still interleaves with shadow polling. */
+K_MUTEX_DEFINE(pigeon_https_lock);
+
+/* How long the log-upload path waits for the lock before giving up on a
+ * batch. Bounded rather than K_FOREVER because it runs on the system
+ * workqueue: a request that stalls out its full 10s timeout must not hold
+ * every other system work item behind it for that long. Comfortably longer
+ * than a healthy request, so contention normally just delays a flush
+ * instead of dropping one -- and a wait this long only happens when the
+ * link is already sick, which is exactly when a lost log batch matters
+ * least. The handler already occupies the workqueue for the upload itself,
+ * so this bound keeps total occupancy in the same range as before. */
+#define PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS 3000
 
 /* Parsed once (lazily, on first use) from CONFIG_PIGEON_ENDPOINT, e.g.
  * "https://api.pidgeiot.com/device/pigeons/<id>" -> host + path, since
@@ -229,11 +261,7 @@ static int pigeon_https_response_cb(
   return 0;
 }
 
-int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
-  if (!out) {
-    return -EINVAL;
-  }
-
+static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -315,11 +343,25 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
-int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
-  if (!body || !body_len) {
+int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
+  if (!out) {
     return -EINVAL;
   }
 
+  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+
+  int err = pigeon_shadow_get_locked(out);
+
+  k_mutex_unlock(&pigeon_https_lock);
+
+  /* The lock covers the request and the decode, but out's config pointers
+   * alias pigeon_shadow_wire and escape it -- they stay valid only until
+   * the next call into this module, exactly as pigeon.h documents. A caller
+   * that shares them with another thread must copy them out first. */
+  return err;
+}
+
+static int pigeon_transport_report_telemetry_locked(const char *body, size_t body_len) {
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -383,11 +425,21 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
   return 0;
 }
 
-int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
-  if (!data || !len) {
+int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+  if (!body || !body_len) {
     return -EINVAL;
   }
 
+  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+
+  int err = pigeon_transport_report_telemetry_locked(body, body_len);
+
+  k_mutex_unlock(&pigeon_https_lock);
+
+  return err;
+}
+
+static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) {
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -448,7 +500,27 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
   return 0;
 }
 
-int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
+  if (!data || !len) {
+    return -EINVAL;
+  }
+
+  /* The one caller that waits with a bound instead of K_FOREVER -- see
+   * PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS. -EBUSY lands in the same
+   * best-effort "this batch is lost" path the log backend already applies
+   * to any other upload failure. */
+  if (k_mutex_lock(&pigeon_https_lock, K_MSEC(PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS)) != 0) {
+    return -EBUSY;
+  }
+
+  int err = pigeon_transport_upload_logs_locked(data, len);
+
+  k_mutex_unlock(&pigeon_https_lock);
+
+  return err;
+}
+
+static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -518,6 +590,16 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
   return 0;
 }
 
+int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+
+  int err = pigeon_shadow_report_locked(current_version, current_config);
+
+  k_mutex_unlock(&pigeon_https_lock);
+
+  return err;
+}
+
 #if defined(CONFIG_PIGEON_FOTA)
 
 /* Streaming window for the socket/HTTP-parser's own internal read buffer --
@@ -561,13 +643,9 @@ static int pigeon_https_fota_response_cb(
   return 0;
 }
 
-int pigeon_transport_download_firmware(
+static int pigeon_transport_download_firmware_locked(
     size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
 ) {
-  if (!buf || !buf_len || !out_len || !out_total) {
-    return -EINVAL;
-  }
-
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -588,8 +666,8 @@ int pigeon_transport_download_firmware(
 
   snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
 
-  /* Inclusive end byte, per RFC 7233 -- buf_len is always > 0 here (see the
-   * guard above), so offset + buf_len - 1 never underflows. */
+  /* Inclusive end byte, per RFC 7233 -- buf_len is always > 0 here (the
+   * public wrapper rejects zero), so offset + buf_len - 1 never underflows. */
   char range_header[64];
 
   snprintk(
@@ -646,6 +724,26 @@ int pigeon_transport_download_firmware(
                    : 0;
 
   return 0;
+}
+
+int pigeon_transport_download_firmware(
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+) {
+  if (!buf || !buf_len || !out_len || !out_total) {
+    return -EINVAL;
+  }
+
+  /* Per chunk, not per download: this path writes only the caller's buffer
+   * and its own recv buffer, but it still needs the endpoint parse and the
+   * device's single TLS handshake. Releasing between chunks lets shadow
+   * polling and log uploads continue during a long transfer. */
+  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+
+  int err = pigeon_transport_download_firmware_locked(offset, buf, buf_len, out_len, out_total);
+
+  k_mutex_unlock(&pigeon_https_lock);
+
+  return err;
 }
 
 #endif /* CONFIG_PIGEON_FOTA */

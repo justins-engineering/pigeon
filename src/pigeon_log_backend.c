@@ -16,6 +16,7 @@
  * leaves the host.
  */
 
+#include <errno.h>
 #include <pigeon.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -73,9 +74,10 @@ static K_WORK_DELAYABLE_DEFINE(pigeon_log_flush_work, pigeon_log_flush_work_hand
 
 static void pigeon_log_schedule_flush(k_timeout_t delay) {
   /* Runs on the system workqueue, not the logging thread -- a slow/hanging
-   * POST (up to the 10s http_client_req() timeout in pigeon_https.c) stalls
-   * other system work rather than backing up the log message queue. This is
-   * a background, best-effort upload path; nothing here blocks a caller of
+   * POST (up to the 10s http_client_req() timeout in pigeon_https.c), plus
+   * the bounded wait for that module's transport lock, stalls other system
+   * work rather than backing up the log message queue. This is a
+   * background, best-effort upload path; nothing here blocks a caller of
    * pigeon_set_shadow_param()/LOG_* or the app's own control flow. */
   k_work_reschedule(&pigeon_log_flush_work, delay);
 }
@@ -102,8 +104,17 @@ static void pigeon_log_flush_work_handler(struct k_work *work) {
        * unbounded retry growth against a ring buffer that keeps producing
        * new records while offline, and this feature is explicitly an
        * opportunistic low-data channel, not a guaranteed-delivery log
-       * shipper -- gaps are an acceptable tradeoff for staying bounded. */
-      LOG_WRN("Pigeon log upload POST failed (%d), %u bytes dropped", err, len);
+       * shipper -- gaps are an acceptable tradeoff for staying bounded.
+       *
+       * -EBUSY gets its own line so a decoded log distinguishes "the
+       * transport was mid-request for another caller" from "the POST was
+       * attempted and failed" -- the first says nothing about network
+       * health and should not be read as an outage. */
+      if (err == -EBUSY) {
+        LOG_WRN("Pigeon log upload skipped, transport busy; %u bytes dropped", len);
+      } else {
+        LOG_WRN("Pigeon log upload POST failed (%d), %u bytes dropped", err, len);
+      }
     }
   }
 
