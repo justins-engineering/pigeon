@@ -4,9 +4,30 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
 #include <pigeon.h>
+
+/*
+ * Implemented in pigeon_core.c. Serializes TLS handshakes across every
+ * transport module -- see the mutex's own comment there for why the modem
+ * requires that and why it cannot be per-module.
+ *
+ * Take it around a connect that performs a handshake, and around any
+ * module-global state a transport shares between its own callers. Do NOT
+ * hold it across traffic on an already-established session: several
+ * concurrent sessions are permitted, and holding it there would serialize
+ * a FOTA download against shadow polling.
+ *
+ * Foreground callers pass K_FOREVER. Background ones -- anything on the
+ * system workqueue, or a worker with its own retry schedule -- should pass
+ * a bounded timeout and treat a non-zero return as "try again later";
+ * stalling a shared workqueue on a sick link is worse than skipping the
+ * attempt. Returns 0 when acquired, negative otherwise.
+ */
+int pigeon_transport_lock(k_timeout_t timeout);
+void pigeon_transport_unlock(void);
 
 /*
  * Per-slot caps (buffer sizes, including the NUL) on one pending telemetry

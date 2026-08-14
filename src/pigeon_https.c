@@ -31,25 +31,28 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * same cap on target_config/current_config, so one file owns the definition. */
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
 
-/* Serializes every request this module issues. All the state below --
- * the lazily-parsed host/path, the HTTP parser's scratch buffer, the
- * accumulated body and its length, the decoded shadow -- is module-global
- * and was shared with no lock at all across two genuinely concurrent
- * callers: the log backend uploads from the system workqueue (cooperative,
- * higher priority than any pigeon thread) while the poller thread fetches
- * and reports the shadow. The workqueue preempting the poller mid-request
- * left the poller parsing a body some other request had overwritten, or a
- * body length belonging to neither.
+/* This module's requests run under the shared transport lock
+ * (pigeon_transport_lock(), pigeon_core.c) rather than a lock of their own,
+ * because it has two jobs here and they need the same mutex.
  *
- * It also gives the device one TLS handshake at a time. On an nRF91 with
- * the CA in the modem's credential store these sockets are offloaded, so
- * the handshake runs inside the modem -- which permits several concurrent
- * TLS *sessions* but only one handshake in flight, and reports the
- * violation as a spurious "sec_tag not found" on an otherwise valid tag.
+ * The first is this module's own state -- the lazily-parsed host/path, the
+ * HTTP parser's scratch buffer, the accumulated body and its length, the
+ * decoded shadow. All of it is module-global and was shared with no lock at
+ * all across two genuinely concurrent callers: the log backend uploads from
+ * the system workqueue (cooperative, higher priority than any pigeon
+ * thread) while the poller thread fetches and reports the shadow. The
+ * workqueue preempting the poller mid-request left the poller parsing a
+ * body some other request had overwritten, or a body length belonging to
+ * neither.
+ *
+ * The second is the modem's one-handshake-at-a-time limit, which is not
+ * this module's alone to enforce: pigeon_ws.c opens its own TLS socket to
+ * the same host with the same sec_tag, so a lock private to this file
+ * would leave a WS reconnect free to handshake underneath an HTTPS
+ * request.
  *
  * Held for one connect/request/close only, never across a multi-chunk
  * download, so a FOTA transfer still interleaves with shadow polling. */
-K_MUTEX_DEFINE(pigeon_https_lock);
 
 /* How long the log-upload path waits for the lock before giving up on a
  * batch. Bounded rather than K_FOREVER because it runs on the system
@@ -348,11 +351,11 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
     return -EINVAL;
   }
 
-  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+  (void)pigeon_transport_lock(K_FOREVER);
 
   int err = pigeon_shadow_get_locked(out);
 
-  k_mutex_unlock(&pigeon_https_lock);
+  pigeon_transport_unlock();
 
   /* The lock covers the request and the decode, but out's config pointers
    * alias pigeon_shadow_wire and escape it -- they stay valid only until
@@ -430,11 +433,11 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
     return -EINVAL;
   }
 
-  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+  (void)pigeon_transport_lock(K_FOREVER);
 
   int err = pigeon_transport_report_telemetry_locked(body, body_len);
 
-  k_mutex_unlock(&pigeon_https_lock);
+  pigeon_transport_unlock();
 
   return err;
 }
@@ -509,13 +512,13 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
    * PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS. -EBUSY lands in the same
    * best-effort "this batch is lost" path the log backend already applies
    * to any other upload failure. */
-  if (k_mutex_lock(&pigeon_https_lock, K_MSEC(PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS)) != 0) {
+  if (pigeon_transport_lock(K_MSEC(PIGEON_HTTPS_LOG_LOCK_TIMEOUT_MS)) != 0) {
     return -EBUSY;
   }
 
   int err = pigeon_transport_upload_logs_locked(data, len);
 
-  k_mutex_unlock(&pigeon_https_lock);
+  pigeon_transport_unlock();
 
   return err;
 }
@@ -591,11 +594,11 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
 }
 
 int pigeon_shadow_report(int32_t current_version, const char *current_config) {
-  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+  (void)pigeon_transport_lock(K_FOREVER);
 
   int err = pigeon_shadow_report_locked(current_version, current_config);
 
-  k_mutex_unlock(&pigeon_https_lock);
+  pigeon_transport_unlock();
 
   return err;
 }
@@ -737,11 +740,11 @@ int pigeon_transport_download_firmware(
    * and its own recv buffer, but it still needs the endpoint parse and the
    * device's single TLS handshake. Releasing between chunks lets shadow
    * polling and log uploads continue during a long transfer. */
-  k_mutex_lock(&pigeon_https_lock, K_FOREVER);
+  (void)pigeon_transport_lock(K_FOREVER);
 
   int err = pigeon_transport_download_firmware_locked(offset, buf, buf_len, out_len, out_total);
 
-  k_mutex_unlock(&pigeon_https_lock);
+  pigeon_transport_unlock();
 
   return err;
 }

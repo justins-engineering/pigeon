@@ -2,6 +2,7 @@
 #include <pigeon.h>
 #include <stdbool.h>
 #include <string.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 /* snprintk: must be included explicitly -- logging/log.h only provides it
  * transitively when CONFIG_LOG=y, and this module also builds into log-free
@@ -15,6 +16,31 @@
 #endif
 
 LOG_MODULE_REGISTER(pigeon, CONFIG_PIGEON_LOG_LEVEL);
+
+/* Serializes TLS handshakes across every transport module, which is why it
+ * lives here rather than inside one of them: on an offloaded-TLS modem the
+ * handshake runs in the modem, and that modem permits several concurrent
+ * TLS *sessions* but only one handshake in flight, reporting a violation as
+ * a spurious "sec_tag not found" on a tag that is demonstrably present.
+ *
+ * pigeon_https.c also depends on it to guard its module-global request
+ * state, so it holds the lock across a whole connect/request/close.
+ * pigeon_ws.c shares no state with it and takes the lock only around its
+ * own connect -- the one point where both modules can be handshaking at
+ * once. Nothing holds it across an established session's traffic:
+ * concurrent sessions are permitted, and doing so would stall polling
+ * behind a long transfer for no gain.
+ *
+ * Defining it in core keeps it independent of which transports a given
+ * build selects, rather than making one module's presence a prerequisite
+ * for another's correctness. */
+K_MUTEX_DEFINE(pigeon_transport_mutex);
+
+int pigeon_transport_lock(k_timeout_t timeout) {
+  return k_mutex_lock(&pigeon_transport_mutex, timeout);
+}
+
+void pigeon_transport_unlock(void) { k_mutex_unlock(&pigeon_transport_mutex); }
 
 /* Batched pending-telemetry store: CONFIG_PIGEON_TELEMETRY_MAX_KEYS
  * latest-value-per-key slots (mirroring the backend's own upsert

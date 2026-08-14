@@ -401,7 +401,39 @@ static int pigeon_ws_connect_once(void) {
     return err;
   }
 
+  /* The TLS handshake inside pigeon_ws_open_tls_socket() is the only place
+   * this module competes with pigeon_https.c for the modem's single
+   * in-flight handshake, so the shared transport lock covers that call and
+   * is released immediately after. The HTTP upgrade below runs on the
+   * already-established session and does not need it.
+   *
+   * Bounded rather than K_FOREVER: this worker already owns a backoff
+   * schedule, so failing to acquire is best reported as a failed connect
+   * and retried on that schedule rather than blocking the worker on a lock
+   * whose holder may itself be timing out.
+   *
+   * The bound has to exceed how long the HTTPS side actually holds the
+   * lock, or a reconnect would lose essentially every race and the socket
+   * would only come back when the poller happened to be idle. Measured on
+   * this hardware: a steady-state fetch with TLS session resumption runs
+   * 1.0-1.6s, a cold one about 4s, and a FOTA chunk 2.9s worst case. The
+   * ceiling is http_client_req()'s own 10s timeout plus connect/close. So
+   * this bound clears the normal cases several times over and only loses
+   * to a transaction already running to its own timeout -- which is
+   * exactly when the link is sick and deferring the reconnect is the right
+   * answer anyway.
+   *
+   * A download does not hold the lock throughout: pigeon_https.c takes it
+   * per Range request, so a reconnect competes with one chunk, not with
+   * the whole transfer. */
+  if (pigeon_transport_lock(K_MSEC(PIGEON_WS_CONNECT_TIMEOUT_MS)) != 0) {
+    LOG_WRN("WS: transport busy, deferring connect to the next backoff");
+    return -EBUSY;
+  }
+
   int sock = pigeon_ws_open_tls_socket();
+
+  pigeon_transport_unlock();
 
   if (sock < 0) {
     return sock;
