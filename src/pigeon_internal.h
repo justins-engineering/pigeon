@@ -95,12 +95,22 @@ size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
 int pigeon_transport_report_telemetry(const char *body, size_t body_len);
 
 /*
- * Implemented only by pigeon_https.c (see zephyr/Kconfig: CONFIG_PIGEON_LOG_UPLOAD
- * depends on CONFIG_PIGEON_CONNECTOR_HTTPS -- CoAP has no equivalent transport
- * for this yet). POSTs a raw binary chunk of accumulated Zephyr dictionary-mode
- * log records to <endpoint>/logs, device-authenticated the same way as
- * pigeon_transport_report_telemetry() above. Called only from
+ * Implemented by whichever transport module is compiled in, same as
+ * pigeon_transport_report_telemetry() above. POSTs a raw binary chunk of
+ * accumulated Zephyr dictionary-mode log records to <endpoint>/logs,
+ * device-authenticated the same way. Called only from
  * pigeon_log_backend.c's flush work handler, never from application code.
+ *
+ * The chunk is bounded by CONFIG_PIGEON_LOG_UPLOAD_BUF_SIZE, which may
+ * exceed what a single message can carry: pigeon_https.c streams it as one
+ * request body, pigeon_coap.c splits it into an RFC 7959 Block1 sequence.
+ *
+ * Uniquely among these hooks it runs on the system workqueue rather than
+ * the app's own thread, so both implementations wait for the shared
+ * transport lock with a bound instead of K_FOREVER and return -EBUSY rather
+ * than stalling every other system work item behind a sick link. The caller
+ * reports -EBUSY distinctly from a failed send, and drops the batch either
+ * way.
  */
 int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
 

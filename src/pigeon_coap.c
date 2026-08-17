@@ -358,7 +358,8 @@ static int pigeon_coap_append_uri_path(
 }
 
 int pigeon_coap_append_request_options(
-    struct coap_packet *cpkt, const char *leaf, bool has_payload
+    struct coap_packet *cpkt, const char *leaf, bool has_payload,
+    const struct pigeon_coap_req_opts *opts
 ) {
   int err = pigeon_coap_append_uri_path(cpkt, pigeon_coap_path, leaf);
 
@@ -366,23 +367,31 @@ int pigeon_coap_append_request_options(
     return err;
   }
 
-  if (!has_payload) {
-    return 0;
+  if (has_payload) {
+    uint16_t format = opts ? opts->content_format : COAP_CONTENT_FORMAT_APP_JSON;
+
+    err = coap_append_option_int(cpkt, COAP_OPTION_CONTENT_FORMAT, format);
+    if (err) {
+      return err;
+    }
   }
 
-  return coap_append_option_int(cpkt, COAP_OPTION_CONTENT_FORMAT, COAP_CONTENT_FORMAT_APP_JSON);
+  /* Block1 (27) goes on after Content-Format (12): options must be appended
+   * in ascending option number, and a payload-less block would be
+   * meaningless anyway. */
+  if (opts && opts->block1) {
+    return coap_append_block1_option(cpkt, opts->block1);
+  }
+
+  return 0;
 }
 
-int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
-  if (!out) {
-    return -EINVAL;
-  }
-
+static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   uint8_t rsp_code;
   const uint8_t *payload;
   size_t payload_len;
   int err = pigeon_coap_transport_exchange(
-      COAP_METHOD_GET, "shadow", NULL, 0, &rsp_code, &payload, &payload_len
+      COAP_METHOD_GET, "shadow", NULL, 0, NULL, &rsp_code, &payload, &payload_len
   );
 
   if (err) {
@@ -419,11 +428,26 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
-int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
-  if (!body || !body_len) {
+int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
+  if (!out) {
     return -EINVAL;
   }
 
+  (void)pigeon_transport_lock(K_FOREVER);
+
+  int err = pigeon_shadow_get_locked(out);
+
+  pigeon_transport_unlock();
+
+  /* The lock covers the exchange and the decode, but out's config pointers
+   * alias pigeon_coap_shadow_wire and escape it -- they stay valid only
+   * until the next call into this module, exactly as pigeon.h documents and
+   * exactly as pigeon_https.c's equivalent behaves. A caller that shares
+   * them with another thread must copy them out first. */
+  return err;
+}
+
+static int pigeon_transport_report_telemetry_locked(const char *body, size_t body_len) {
   /* body arrives pre-escaped and pre-framed (one flat JSON object of every
    * pending key, at most PIGEON_TELEMETRY_BODY_MAX bytes) from
    * pigeon_core.c's pigeon_telemetry_flush(). PIGEON_COAP_MSG_MAX is sized
@@ -434,7 +458,7 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
   const uint8_t *payload;
   size_t payload_len;
   int err = pigeon_coap_transport_exchange(
-      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, &rsp_code, &payload,
+      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, NULL, &rsp_code, &payload,
       &payload_len
   );
 
@@ -450,7 +474,21 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
   return 0;
 }
 
-int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+  if (!body || !body_len) {
+    return -EINVAL;
+  }
+
+  (void)pigeon_transport_lock(K_FOREVER);
+
+  int err = pigeon_transport_report_telemetry_locked(body, body_len);
+
+  pigeon_transport_unlock();
+
+  return err;
+}
+
+static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
   /* current_config is embedded verbatim as a raw JSON object -- not
    * quote-escaped, trusted to already be valid JSON (the caller's
    * responsibility; see the matching note in pigeon_https.c). The margin
@@ -466,7 +504,7 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
   const uint8_t *payload;
   size_t payload_len;
   int err = pigeon_coap_transport_exchange(
-      COAP_METHOD_POST, "shadow", (const uint8_t *)body, strlen(body), &rsp_code, &payload,
+      COAP_METHOD_POST, "shadow", (const uint8_t *)body, strlen(body), NULL, &rsp_code, &payload,
       &payload_len
   );
 
@@ -481,3 +519,113 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 
   return 0;
 }
+
+int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+  (void)pigeon_transport_lock(K_FOREVER);
+
+  int err = pigeon_shadow_report_locked(current_version, current_config);
+
+  pigeon_transport_unlock();
+
+  return err;
+}
+
+#if defined(CONFIG_PIGEON_LOG_UPLOAD)
+/* Sends one already-drained log batch as an RFC 7959 Block1 sequence.
+ *
+ * Block-wise rather than one message because a batch is sized by
+ * CONFIG_PIGEON_LOG_UPLOAD_BUF_SIZE, which answers to how much log volume to
+ * buffer, not to what fits a datagram -- the two have no reason to agree,
+ * and at the 2048-byte default they do not. A batch that fits one block
+ * still carries a Block1 option (num 0, more 0), which RFC 7959 permits and
+ * the terminator treats exactly as the plain no-Block1 case.
+ *
+ * The terminator keys its reassembly on (connection, leaf) and refuses any
+ * block that is not the next in sequence, so a failed block cannot be
+ * retried in place -- this abandons the whole batch, and the next flush
+ * starts a fresh num 0. That matches the backend's existing best-effort
+ * contract rather than growing a retry path of its own. */
+static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) {
+  struct coap_block_context ctx;
+  int err = coap_block_transfer_init(&ctx, PIGEON_COAP_LOG_BLOCK_SIZE, len);
+
+  if (err) {
+    return err;
+  }
+
+  const uint16_t block_bytes = coap_block_size_to_bytes(PIGEON_COAP_LOG_BLOCK_SIZE);
+  int64_t deadline = k_uptime_get() + PIGEON_COAP_LOG_UPLOAD_BUDGET_MS;
+  struct pigeon_coap_req_opts opts = {
+      /* Dictionary-encoded binary records, not the JSON every other request
+       * on this connector carries. */
+      .content_format = COAP_CONTENT_FORMAT_APP_OCTET_STREAM,
+      .block1 = &ctx,
+  };
+
+  while (ctx.current < len) {
+    if (k_uptime_get() >= deadline) {
+      LOG_WRN(
+          "Log upload abandoned after %u of %u bytes: budget spent", (unsigned)ctx.current,
+          (unsigned)len
+      );
+      return -ETIMEDOUT;
+    }
+
+    size_t remaining = len - ctx.current;
+    size_t this_block = MIN(remaining, (size_t)block_bytes);
+    bool last = (this_block == remaining);
+    uint8_t rsp_code;
+    const uint8_t *payload;
+    size_t payload_len;
+
+    err = pigeon_coap_transport_exchange(
+        COAP_METHOD_POST, "logs", data + ctx.current, this_block, &opts, &rsp_code, &payload,
+        &payload_len
+    );
+
+    if (err) {
+      return err;
+    }
+
+    if ((rsp_code >> 5) != 2) {
+      LOG_ERR("Log upload POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+      return -EIO;
+    }
+
+    /* 2.31 Continue is what acknowledges a non-final block; anything else
+     * means the server stopped reassembling early, so every byte still
+     * queued behind this one would be appended to nothing. */
+    if (!last && rsp_code != COAP_RESPONSE_CODE_CONTINUE) {
+      LOG_ERR(
+          "Log upload block %u answered %u.%02u, expected 2.31 Continue",
+          (unsigned)(ctx.current / block_bytes), rsp_code >> 5, rsp_code & 0x1F
+      );
+      return -EIO;
+    }
+
+    ctx.current += this_block;
+  }
+
+  return 0;
+}
+
+int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
+  if (!data || !len) {
+    return -EINVAL;
+  }
+
+  /* The one caller that waits with a bound instead of K_FOREVER, for the
+   * reason PIGEON_COAP_LOG_LOCK_TIMEOUT_MS documents. -EBUSY lands in the
+   * same best-effort "this batch is lost" path pigeon_log_backend.c already
+   * applies to any other upload failure. */
+  if (pigeon_transport_lock(K_MSEC(PIGEON_COAP_LOG_LOCK_TIMEOUT_MS)) != 0) {
+    return -EBUSY;
+  }
+
+  int err = pigeon_transport_upload_logs_locked(data, len);
+
+  pigeon_transport_unlock();
+
+  return err;
+}
+#endif /* CONFIG_PIGEON_LOG_UPLOAD */

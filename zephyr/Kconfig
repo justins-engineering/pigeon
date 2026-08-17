@@ -219,22 +219,40 @@ config PIGEON_SHADOW_CONFIG_MAX
 config PIGEON_LOG_UPLOAD
   bool "Remote log upload (Zephyr dictionary-based logging)"
   default n
-  depends on PIGEON_CONNECTOR_HTTPS
+  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_COAP
   select LOG_DICTIONARY_SUPPORT
   help
     Capture this device's log output via Zephyr's dictionary-based
-    logging (CONFIG_LOG_DICTIONARY_SUPPORT -- format strings are
-    stripped from the firmware image and never sent over the air,
-    only a source id, level, timestamp, and packed arguments per
-    record, which is the low-data win) into a bounded ring buffer,
-    and flush it in batches as a raw binary POST to
-    <CONFIG_PIGEON_ENDPOINT>/logs, device-authenticated the same way
-    as the telemetry/shadow reports in pigeon_https.c. Off by
+    logging (CONFIG_LOG_DICTIONARY_SUPPORT -- the records carry only
+    a source id, level, timestamp, and packed arguments, never the
+    format strings themselves, which is the low-data win) into a
+    bounded ring buffer, and flush it in batches as a raw binary
+    POST to <CONFIG_PIGEON_ENDPOINT>/logs, device-authenticated the
+    same way as this connector's telemetry/shadow reports. Off by
     default -- existing samples build unchanged, and enabling it
     changes the build's log_dictionary.json requirement for decoding
     (see pigeon-examples' README for the host-side decode flow).
-    HTTPS connector only; the CoAP connector has no equivalent
-    transport for this yet.
+
+    Selecting this does NOT turn the console binary: dictionary
+    encoding is per-backend, and only this backend uses it. A UART
+    console keeps rendering human-readable text unless the image
+    also sets CONFIG_LOG_BACKEND_UART_OUTPUT_DICTIONARY_HEX.
+
+    Both connectors implement the upload. On CoAP a batch larger
+    than one datagram's worth is sent as an RFC 7959 Block1
+    sequence, so CONFIG_PIGEON_LOG_UPLOAD_BUF_SIZE is not capped by
+    the CoAP frame size.
+
+    Requires a log mode that dispatches to backends, i.e. NOT
+    CONFIG_LOG_MODE_MINIMAL (which never calls a backend at all, so
+    the ring buffer would simply stay empty). Prefer
+    CONFIG_LOG_MODE_DEFERRED over CONFIG_LOG_MODE_IMMEDIATE: the
+    ring buffer is filled by the backend and drained by the flush
+    work item, which is a safe single-producer/single-consumer pair
+    only while one thread does the filling. Deferred mode guarantees
+    that (the log processing thread is the sole producer); immediate
+    mode runs the backend on whichever thread happened to log, so
+    two of them can race inside the same ring buffer.
 
 if PIGEON_LOG_UPLOAD
 

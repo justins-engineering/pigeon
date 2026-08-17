@@ -3,10 +3,11 @@
  * (Zephyr's CONFIG_LOG_DICTIONARY_SUPPORT -- source strings stay on the host
  * side, never in the firmware image or over the air) into a bounded ring
  * buffer, and flushes it in batches (size threshold + max interval) as a raw
- * binary POST to <CONFIG_PIGEON_ENDPOINT>/logs via pigeon_transport_upload_logs()
- * (pigeon_https.c). Opt-in, gated by CONFIG_PIGEON_LOG_UPLOAD -- see
- * zephyr/Kconfig; this file is only compiled in when that's set (see
- * CMakeLists.txt).
+ * binary POST to <CONFIG_PIGEON_ENDPOINT>/logs via pigeon_transport_upload_logs(),
+ * implemented by whichever connector the build selected (pigeon_https.c as one
+ * request body, pigeon_coap.c as an RFC 7959 Block1 sequence). Opt-in, gated by
+ * CONFIG_PIGEON_LOG_UPLOAD -- see zephyr/Kconfig; this file is only compiled in
+ * when that's set (see CMakeLists.txt).
  *
  * Host-side decode: the build's log_dictionary.json (generated because
  * CONFIG_PIGEON_LOG_UPLOAD selects CONFIG_LOG_DICTIONARY_SUPPORT) plus

@@ -295,8 +295,9 @@ static int pigeon_coap_udp_wait_one(
  * pigeon_coap_udp_match.c), handle both piggybacked and separate
  * responses. */
 static int pigeon_coap_udp_do_exchange(
-    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len, uint8_t *rsp_code,
-    const uint8_t **rsp_payload, size_t *rsp_payload_len
+    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
+    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
+    size_t *rsp_payload_len
 ) {
   uint8_t req_buf[PIGEON_COAP_MSG_MAX];
   struct coap_packet req;
@@ -312,7 +313,7 @@ static int pigeon_coap_udp_do_exchange(
     return err;
   }
 
-  err = pigeon_coap_append_request_options(&req, leaf, payload && payload_len);
+  err = pigeon_coap_append_request_options(&req, leaf, payload && payload_len, opts);
   if (err) {
     return err;
   }
@@ -442,8 +443,9 @@ deliver:
 }
 
 int pigeon_coap_transport_exchange(
-    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len, uint8_t *rsp_code,
-    const uint8_t **rsp_payload, size_t *rsp_payload_len
+    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
+    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
+    size_t *rsp_payload_len
 ) {
   int err = pigeon_coap_parse_endpoint();
 
@@ -457,7 +459,7 @@ int pigeon_coap_transport_exchange(
   }
 
   err = pigeon_coap_udp_do_exchange(
-      code, leaf, payload, payload_len, rsp_code, rsp_payload, rsp_payload_len
+      code, leaf, payload, payload_len, opts, rsp_code, rsp_payload, rsp_payload_len
   );
 
   if (err) {

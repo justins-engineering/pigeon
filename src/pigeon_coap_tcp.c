@@ -142,7 +142,7 @@ static int pigeon_coap_tcp_recv_exact(int sock, uint8_t *buf, size_t len) {
 }
 
 /* Builds an RFC 8323 CoAP-over-TLS/TCP request frame into buf. Uri-Path/
- * Uri-Query/Content-Format come from the shared
+ * Uri-Query/Content-Format/Block1 come from the shared
  * pigeon_coap_append_request_options() (pigeon_coap.c).
  *
  * Returns (via out_start/out_len) a pointer into buf and length ready to
@@ -152,7 +152,8 @@ static int pigeon_coap_tcp_recv_exact(int sock, uint8_t *buf, size_t len) {
  * is known. */
 static int pigeon_coap_tcp_build_request(
     uint8_t *buf, size_t buf_len, uint8_t code, const char *leaf, const uint8_t *payload,
-    size_t payload_len, uint8_t **out_start, size_t *out_len
+    size_t payload_len, const struct pigeon_coap_req_opts *opts, uint8_t **out_start,
+    size_t *out_len
 ) {
   if (buf_len < PIGEON_COAP_TCP_PRE_OPTS) {
     return -ENOSPC;
@@ -170,7 +171,7 @@ static int pigeon_coap_tcp_build_request(
       .hdr_len = PIGEON_COAP_TCP_PRE_OPTS,
   };
 
-  int err = pigeon_coap_append_request_options(&cpkt, leaf, payload && payload_len);
+  int err = pigeon_coap_append_request_options(&cpkt, leaf, payload && payload_len, opts);
 
   if (err) {
     return err;
@@ -236,10 +237,15 @@ static int pigeon_coap_tcp_build_request(
 #define PIGEON_COAP_TCP_CODE_PONG COAP_MAKE_RESPONSE_CODE(7, 3)
 
 /* RFC 8323 sec 5.3: each side MUST send a CSM as its first message on the
- * connection. An empty CSM (no options) advertises the spec defaults
- * (Max-Message-Size 1152, no block-wise), which matches this transport's
- * one-frame-per-exchange usage. The peer's own CSM is skipped by
- * pigeon_coap_tcp_read_message() below. */
+ * connection. An empty CSM (no options) advertises the spec defaults --
+ * Max-Message-Size 1152, and no Block-Wise-Transfer capability. Both still
+ * hold: the capability indication is about what this peer can be SENT, and
+ * nothing here reassembles a block-wise response, every response this
+ * transport reads being one frame. A request body split into Block1 blocks
+ * (CONFIG_PIGEON_LOG_UPLOAD) is the other direction and needs no capability
+ * of ours; if anything it keeps this transport further inside the peer's own
+ * 1152-byte default than sending a large body whole would. The peer's own
+ * CSM is skipped by pigeon_coap_tcp_read_message() below. */
 static int pigeon_coap_tcp_send_csm(int sock) {
   const uint8_t csm[2] = {0x00, PIGEON_COAP_TCP_CODE_CSM};
   ssize_t sent = zsock_send(sock, csm, sizeof(csm), 0);
@@ -442,8 +448,9 @@ static int pigeon_coap_tcp_find_payload(
 }
 
 int pigeon_coap_transport_exchange(
-    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len, uint8_t *rsp_code,
-    const uint8_t **rsp_payload, size_t *rsp_payload_len
+    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
+    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
+    size_t *rsp_payload_len
 ) {
   int err = pigeon_coap_parse_endpoint();
 
@@ -469,7 +476,7 @@ int pigeon_coap_transport_exchange(
   size_t req_len;
 
   err = pigeon_coap_tcp_build_request(
-      req_buf, sizeof(req_buf), code, leaf, payload, payload_len, &req_start, &req_len
+      req_buf, sizeof(req_buf), code, leaf, payload, payload_len, opts, &req_start, &req_len
   );
   if (err) {
     zsock_close(sock);
