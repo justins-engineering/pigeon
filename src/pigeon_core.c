@@ -15,6 +15,10 @@
 #include "pigeon_coap_internal.h"
 #endif
 
+#if defined(CONFIG_PIGEON_RESET_CAUSE_TELEMETRY)
+#include <zephyr/drivers/hwinfo.h>
+#endif
+
 LOG_MODULE_REGISTER(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 /* Serializes TLS handshakes across every transport module, which is why it
@@ -194,6 +198,30 @@ int pigeon_init(const struct pigeon_config* config) {
 
   pigeon_state.initialized = true;
   LOG_INF("Pigeon tracking instance ready: %s", config->device_id);
+
+#if defined(CONFIG_PIGEON_RESET_CAUSE_TELEMETRY)
+  /* One-shot: queued here so it rides this boot's first telemetry flush
+   * over whichever transport is active, same as any other key. Read-only
+   * on purpose -- see CONFIG_PIGEON_RESET_CAUSE_TELEMETRY's Kconfig help
+   * for why this must never call hwinfo_clear_reset_cause(). */
+  {
+    uint32_t reset_cause;
+    int reset_cause_err = hwinfo_get_reset_cause(&reset_cause);
+
+    if (reset_cause_err) {
+      LOG_WRN(
+          "hwinfo_get_reset_cause failed: %d -- no reset_cause telemetry this boot",
+          reset_cause_err
+      );
+    } else {
+      /* Widest uint32_t as decimal ("4294967295") plus NUL. */
+      char reset_cause_str[11];
+
+      snprintk(reset_cause_str, sizeof(reset_cause_str), "%u", reset_cause);
+      pigeon_telemetry_set("reset_cause", reset_cause_str);
+    }
+  }
+#endif
 
 #if defined(CONFIG_PIGEON_WATCHDOG)
   pigeon_watchdog_start();

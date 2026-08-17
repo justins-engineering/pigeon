@@ -694,6 +694,46 @@ config PIGEON_WATCHDOG_TIMEOUT_SEC
 
 endif # PIGEON_WATCHDOG
 
+config PIGEON_RESET_CAUSE_TELEMETRY
+  bool "Report the boot's reset cause as telemetry"
+  default y
+  select HWINFO
+  help
+    Reads Zephyr's hwinfo reset-cause register once in pigeon_init() and
+    queues it as a "reset_cause" telemetry key -- the raw hwinfo bitmask
+    rather than a decoded string, so it stays a numeric value: graphable
+    in fancier and forwarded over line protocol like any other numeric
+    key, instead of only rendering as a chip (see the telemetry-
+    forwarding note in pidgeiot's CLAUDE.md on why a non-numeric value
+    is excluded from both). It rides the first telemetry flush of each
+    boot, the same one-key-on-one-report cost CONFIG_PIGEON_WATCHDOG's
+    liveness feed already pays.
+
+    This closes an observability gap found the hard way: a departure
+    board rebooted in production and the cause was never recorded
+    anywhere the platform could reach -- only a bench UART capture that
+    dropped the boot banner on reset, and a 200-chunk dictionary log
+    that has to be pulled and decoded offline. With this on, every
+    future reboot is self-explaining from the dashboard the platform
+    already has, no forensics required.
+
+    Deliberately read-only: this never calls hwinfo_clear_reset_cause().
+    An application that reads and clears the cause itself before calling
+    pigeon_init() (embedded-departure-board's own log_reset_reason()
+    does exactly this in its boot path) would otherwise make this read
+    racy against init ordering -- whichever of the two ran second would
+    see an already-cleared register. Leaving it alone means both readers
+    always see the same value regardless of which runs first, at the
+    cost of never distinguishing this boot's cause from a prior one on a
+    platform whose reset-cause register accumulates across resets
+    without a clear (most platforms in this fleet report only the most
+    recent cause regardless; see hwinfo_esp32.c/hwinfo_nrf.c).
+
+    On by default: a board with no hwinfo backend gets a logged warning
+    and no reset_cause key that boot (hwinfo_get_reset_cause() returns
+    -ENOSYS via Zephyr's own weak default, see hwinfo_weak_impl.c), not
+    a build failure, so this is safe to leave on fleet-wide.
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled
