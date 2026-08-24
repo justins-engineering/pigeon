@@ -77,15 +77,49 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   reverts back to the previous slot on the *next* reset, so a bad update
   self-heals without any server-side intervention.
 
-`CONFIG_PIGEON_FOTA_RESUME` (off by default) makes a failed or interrupted
-`pigeon_fota_apply()` resumable, across retries **and reboots**: the bytes
-already flushed to the secondary slot are re-hashed from flash on the next
-call and only the remainder is Range-requested — instead of every attempt
-restarting from byte 0. Requires the app to provide a settings backend
-(`CONFIG_SETTINGS` + e.g. `CONFIG_NVS`); see the option's Kconfig help for
-the invalidation rules (version change, failed verify, untrusted state).
-The reconcile/persistence logic has a native_sim unit suite under
+### Surviving a download that goes wrong
+
+Three layers, smallest scope first.
+
+Within one `pigeon_fota_apply()` call, a failed chunk is retried at the
+same offset instead of ending the transfer
+(`CONFIG_PIGEON_FOTA_CHUNK_RETRIES`), and an HTTP 429 is waited out on the
+server's own `Retry-After` against a separate budget
+(`CONFIG_PIGEON_FOTA_RATE_LIMIT_RETRIES`) — a rate limit is the server
+pacing the download, not failing it, and must not spend the tolerance
+reserved for real errors. Both counters are consecutive at one offset and
+reset on every chunk that lands, so a long download over a flaky link is
+never penalized for its length. Delays are clamped by
+`CONFIG_PIGEON_FOTA_RETRY_AFTER_MAX_SEC`.
+
+Across calls and **reboots**, `CONFIG_PIGEON_FOTA_RESUME` (on by default
+wherever a settings backend exists) makes an interrupted
+`pigeon_fota_apply()` resumable: the bytes already flushed to the secondary
+slot are re-hashed from flash on the next call and only the remainder is
+Range-requested, instead of restarting from byte 0. Requires the app to
+provide a settings backend (`CONFIG_SETTINGS` + e.g. `CONFIG_NVS`) — without
+one the symbol simply stays off; see the option's Kconfig help for the
+invalidation rules (version change, failed verify, untrusted state). The
+reconcile/persistence logic has a native_sim unit suite under
 `tests/fota_resume` (build/run instructions in its `src/main.c` header).
+
+Across the whole campaign, `CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET` (opt-in)
+bounds how many times one firmware target is chased, so an image that
+downloads and verifies cleanly but then boot-loops until MCUboot reverts it
+cannot re-download itself forever. The count is bound to the shadow
+`target_version` that named the firmware rather than to the version string
+alone, which is what keeps it recoverable: an operator who writes the
+device's shadow again — same firmware target still in it — reopens the
+budget, while nothing the device does by itself can. Call
+`pigeon_fota_attempt_allowed(info, shadow->target_version)` before
+`pigeon_fota_apply()`, and `pigeon_fota_attempts_clear()` once the offered
+version is confirmed to be the one running; both compile to no-ops when the
+option is off. Unit suite under `tests/fota_attempts`.
+
+A resumed continuation that moves the flushed offset forward costs nothing
+against that budget — resuming is meant to be cheap. One that ends exactly
+where it began made no progress and is charged like a fresh attempt, so a
+transfer wedged at one offset still terminates.
 
 **Signing key:** MCUboot's own image signature check (`sysbuild.conf`:
 `SB_CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y`) is the actual security

@@ -374,10 +374,16 @@ config PIGEON_FOTA_RESUME
     backend's restored offset can't belong to the current target (e.g.
     it exceeds the declared image size, or no record vouches for it).
 
-    ATTEMPT SEMANTICS ARE UNCHANGED: one pigeon_fota_apply() call is
-    still one attempt from the caller's perspective (e.g. a persisted
-    attempts-per-version cap in the app counts a resumed continuation as
-    a new -- merely much cheaper -- attempt).
+    ATTEMPT SEMANTICS: PIGEON_FOTA_ATTEMPT_BUDGET, if enabled, does not
+    charge a resumed continuation that moves the flushed offset forward --
+    resuming is meant to be cheap, and a budget one dropped connection
+    could spend would be exhausted by the very conditions this option
+    exists to survive. A continuation that ends where it began is charged
+    like a fresh attempt, so a transfer stuck at a fixed offset still
+    terminates. An application counting attempts itself sees one
+    pigeon_fota_apply() call as one attempt regardless, and should
+    consider adopting the library budget instead of hand-rolling this
+    distinction.
 
     Requires the application to provide a working settings backend
     (CONFIG_SETTINGS plus e.g. CONFIG_NVS and a storage partition); this

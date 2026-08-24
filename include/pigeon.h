@@ -266,14 +266,19 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * current_config back to the platform first (via pigeon_shadow_report())
  * so the shadow converges before the device goes offline for the swap.
  *
- * Not safe to call concurrently with itself. By default progress is not
- * persisted -- a failed or interrupted call restarts from byte 0 on the
- * next shadow poll. With CONFIG_PIGEON_FOTA_RESUME the bytes already
- * flushed to the secondary slot survive failures AND reboots: the next
- * call re-hashes them from flash and Range-requests only the remainder,
- * restarting from 0 only when the target version changed, the completion
- * verify failed, or the persisted state can't be trusted (see that
- * option's help).
+ * Not safe to call concurrently with itself. Individual chunks are
+ * retried in place rather than ending the transfer, and an HTTP 429 is
+ * waited out on the server's own Retry-After rather than counted as a
+ * failure (see CONFIG_PIGEON_FOTA_CHUNK_RETRIES and
+ * CONFIG_PIGEON_FOTA_RATE_LIMIT_RETRIES).
+ *
+ * With CONFIG_PIGEON_FOTA_RESUME -- on by default wherever a settings
+ * backend exists -- the bytes already flushed to the secondary slot
+ * survive failures AND reboots: the next call re-hashes them from flash
+ * and Range-requests only the remainder, restarting from 0 only when the
+ * target version changed, the completion verify failed, or the persisted
+ * state can't be trusted (see that option's help). Without it, a failed
+ * or interrupted call restarts from byte 0 on the next shadow poll.
  *
  * @return 0 on success, negative errno on failure.
  */
