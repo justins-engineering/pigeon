@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <pigeon.h>
 #include <string.h>
+#include <strings.h>
 #include <zephyr/data/json.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -646,8 +647,75 @@ static int pigeon_https_fota_response_cb(
   return 0;
 }
 
+/* Retry-After capture.
+ *
+ * Zephyr's http_client exposes no way to read an arbitrary response header,
+ * but it does forward every header field/value fragment to an
+ * application-supplied http_parser_settings (struct http_request::http_cb)
+ * before consuming it, which is how this reads the one header it cares
+ * about without patching the vendored client.
+ *
+ * One module-static capture slot is enough: this path runs entirely inside
+ * the shared transport lock, so no other request can be parsing headers
+ * while this one is.
+ */
+#define PIGEON_HTTPS_RETRY_AFTER_MAX 32
+
+static struct {
+  char value[PIGEON_HTTPS_RETRY_AFTER_MAX];
+  uint8_t len;
+  bool capturing;
+} pigeon_https_retry_after;
+
+static int pigeon_https_on_header_field(
+    struct http_parser *parser, const char *at, size_t length
+) {
+  ARG_UNUSED(parser);
+  static const char retry_after[] = "Retry-After";
+
+  /* Exact length, not a prefix match, so a longer header that merely starts
+   * the same way (Retry-After-Policy and friends) can't be mistaken for
+   * this one. A field name split across two socket reads is missed rather
+   * than mismatched -- the same limitation the vendored client's own
+   * Content-Length detection carries, and the safe direction: a missed
+   * header means the caller uses its own backoff. */
+  pigeon_https_retry_after.capturing =
+      (length == sizeof(retry_after) - 1) &&
+      (strncasecmp(at, retry_after, sizeof(retry_after) - 1) == 0);
+
+  return 0;
+}
+
+static int pigeon_https_on_header_value(
+    struct http_parser *parser, const char *at, size_t length
+) {
+  ARG_UNUSED(parser);
+
+  if (!pigeon_https_retry_after.capturing) {
+    return 0;
+  }
+
+  /* Accumulate instead of overwrite: the parser hands over however many
+   * fragments the value happened to be split into. Anything past the
+   * buffer is dropped, which can only ever shrink an implausibly long
+   * value that the cap would have clamped anyway. */
+  size_t room = sizeof(pigeon_https_retry_after.value) - pigeon_https_retry_after.len;
+  size_t n = MIN(length, room);
+
+  memcpy(pigeon_https_retry_after.value + pigeon_https_retry_after.len, at, n);
+  pigeon_https_retry_after.len += (uint8_t)n;
+
+  return 0;
+}
+
+static const struct http_parser_settings pigeon_https_header_cb = {
+    .on_header_field = pigeon_https_on_header_field,
+    .on_header_value = pigeon_https_on_header_value,
+};
+
 static int pigeon_transport_download_firmware_locked(
-    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total,
+    struct pigeon_http_result *res
 ) {
   int err = pigeon_https_parse_endpoint();
 
@@ -682,6 +750,9 @@ static int pigeon_transport_download_firmware_locked(
 
   struct pigeon_https_fota_ctx ctx = {.dst = buf, .dst_len = buf_len, .written = 0};
 
+  pigeon_https_retry_after.len = 0;
+  pigeon_https_retry_after.capturing = false;
+
   struct http_request req = {
       .method = HTTP_GET,
       .url = url,
@@ -691,6 +762,7 @@ static int pigeon_transport_download_firmware_locked(
       .response = pigeon_https_fota_response_cb,
       .recv_buf = pigeon_https_fota_recv_buf,
       .recv_buf_len = sizeof(pigeon_https_fota_recv_buf),
+      .http_cb = &pigeon_https_header_cb,
   };
 
   /* Longer timeout than the control-plane requests above: this is a
@@ -698,12 +770,34 @@ static int pigeon_transport_download_firmware_locked(
   err = http_client_req(sock, &req, 30000, &ctx);
   zsock_close(sock);
 
+  /* Recorded before the error check, not after: a request that fails late
+   * may still have parsed a status line, and that status is the most
+   * useful thing the caller can be told about the failure. */
+  res->status = req.internal.response.http_status_code;
+  res->retry_after_sec = pigeon_http_parse_retry_after(
+      pigeon_https_retry_after.value, pigeon_https_retry_after.len,
+      CONFIG_PIGEON_FOTA_RETRY_AFTER_MAX_SEC
+  );
+
   if (err < 0) {
     LOG_ERR("Firmware chunk GET failed at offset %u: %d", (unsigned)offset, err);
     return err;
   }
 
-  uint16_t status = req.internal.response.http_status_code;
+  uint16_t status = res->status;
+
+  /* Rate limiting is not a failure of this download, it is the server
+   * pacing it, so it gets an errno the caller can tell apart from one --
+   * -EIO here would make an operator-visible "attempt failed" out of an
+   * expected part of a healthy transfer. The delay itself rides in
+   * res->retry_after_sec; the caller decides how to wait. */
+  if (status == 429) {
+    LOG_WRN(
+        "Firmware chunk GET rate-limited at offset %u (Retry-After: %us)", (unsigned)offset,
+        res->retry_after_sec
+    );
+    return -EAGAIN;
+  }
 
   /* Accept 200 too: a server that ignores Range and returns the whole
    * image on the very first (offset=0) request is still usable, just
@@ -737,10 +831,23 @@ static int pigeon_transport_download_firmware_locked(
 }
 
 int pigeon_transport_download_firmware(
-    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total,
+    struct pigeon_http_result *res
 ) {
   if (!buf || !buf_len || !out_len || !out_total) {
     return -EINVAL;
+  }
+
+  /* res is optional for callers that only care whether the chunk arrived;
+   * the helper below always has somewhere to write, so it needs no NULL
+   * check of its own on any exit path. */
+  struct pigeon_http_result scratch = {0};
+
+  if (res) {
+    res->status = 0;
+    res->retry_after_sec = 0;
+  } else {
+    res = &scratch;
   }
 
   /* Per chunk, not per download: this path writes only the caller's buffer
@@ -749,7 +856,8 @@ int pigeon_transport_download_firmware(
    * polling and log uploads continue during a long transfer. */
   (void)pigeon_transport_lock(K_FOREVER);
 
-  int err = pigeon_transport_download_firmware_locked(offset, buf, buf_len, out_len, out_total);
+  int err =
+      pigeon_transport_download_firmware_locked(offset, buf, buf_len, out_len, out_total, res);
 
   pigeon_transport_unlock();
 

@@ -115,6 +115,8 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len);
 int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
 
 #if defined(CONFIG_PIGEON_FOTA)
+#include "pigeon_http_status.h"
+
 /*
  * Implemented only by pigeon_https.c (CONFIG_PIGEON_FOTA depends on
  * CONFIG_PIGEON_CONNECTOR_HTTPS -- no CoAP download transport yet). Issues
@@ -124,12 +126,21 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
  * (may be less than buf_len, e.g. on the final chunk). *out_total is set
  * from the response's Content-Range total field when present, 0
  * otherwise -- callers should treat 0 as "server didn't confirm a total
- * this response", not "total is zero". Returns 0 on success, negative
- * errno on transport/auth/HTTP-status failure. Called only from
- * pigeon_fota_apply() (pigeon_fota.c).
+ * this response", not "total is zero".
+ *
+ * res is optional (NULL is fine) and reports what the server actually
+ * said: the HTTP status and any Retry-After delay, whether the call
+ * succeeded or not. It is what lets the caller tell a rate-limited chunk
+ * apart from a broken one.
+ *
+ * Returns 0 on success, or a negative errno. -EAGAIN specifically means
+ * the server rate-limited this chunk (HTTP 429) and the transfer should be
+ * paced, not abandoned; every other error keeps its previous meaning.
+ * Called only from pigeon_fota_apply() (pigeon_fota.c).
  */
 int pigeon_transport_download_firmware(
-    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total
+    size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total,
+    struct pigeon_http_result *res
 );
 #endif /* CONFIG_PIGEON_FOTA */
 

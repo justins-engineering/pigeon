@@ -50,6 +50,14 @@ static uint8_t pigeon_fota_flash_buf[CONFIG_PIGEON_FOTA_CHUNK_SIZE] __aligned(4)
 static struct flash_img_context pigeon_fota_flash_ctx;
 #endif
 
+/* First backoff step between retries of the same chunk, doubling per
+ * consecutive failure up to CONFIG_PIGEON_FOTA_RETRY_AFTER_MAX_SEC, and the
+ * fallback delay when a rate-limited response carries no usable
+ * Retry-After. Not a Kconfig knob of its own: the ceiling above is the
+ * value worth tuning per fleet, and the first step only decides how quickly
+ * a transfer reacts to a link that dropped for a moment. */
+#define PIGEON_FOTA_RETRY_BACKOFF_BASE_SEC 2
+
 /* Network receive target for each chunk, handed to the active backend
  * (dfu_target_write() or flash_img_buffered_write()) once a full chunk has
  * arrived. Shared by both backends. */
@@ -400,26 +408,74 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
 
   size_t offset = resume_from;
   bool failed = false;
+  /* Both counters are CONSECUTIVE-at-one-offset, cleared by every chunk
+   * that lands: a multi-hour download over a link that hiccups every few
+   * minutes is healthy and must not accumulate its way into a budget meant
+   * to catch a transfer that is genuinely stuck. */
+  uint32_t transient_retries = 0;
+  uint32_t paced_waits = 0;
 
   while (offset < total_size) {
     size_t want = MIN(sizeof(pigeon_fota_chunk_buf), total_size - offset);
     size_t got = 0;
     size_t server_total = 0;
+    struct pigeon_http_result http = {0};
 
     err = pigeon_transport_download_firmware(
-        offset, pigeon_fota_chunk_buf, want, &got, &server_total
+        offset, pigeon_fota_chunk_buf, want, &got, &server_total, &http
     );
-    if (err) {
-      LOG_ERR("FOTA: chunk download failed at offset %zu: %d", offset, err);
-      failed = true;
-      break;
+
+    /* An empty 2xx body is a transport hiccup like any other, so it joins
+     * the retry path below instead of ending the transfer on its own. */
+    if (!err && got == 0) {
+      err = -ENODATA;
     }
 
-    if (got == 0) {
-      LOG_ERR("FOTA: chunk download returned 0 bytes at offset %zu", offset);
-      err = -ENODATA;
-      failed = true;
-      break;
+    if (err == -EAGAIN) {
+      /* The server is pacing us, not failing us. Waiting is the correct
+       * and successful outcome here, so this consumes its own separate
+       * budget and never the transient-failure one -- a rate limit must
+       * not be able to spend a download's error tolerance. */
+      if (++paced_waits > CONFIG_PIGEON_FOTA_RATE_LIMIT_RETRIES) {
+        LOG_ERR("FOTA: still rate-limited at offset %zu after %u waits; stopping", offset,
+                paced_waits - 1);
+        failed = true;
+        break;
+      }
+
+      uint32_t wait_s = http.retry_after_sec ? http.retry_after_sec
+                                             : PIGEON_FOTA_RETRY_BACKOFF_BASE_SEC;
+
+      LOG_WRN("FOTA: rate-limited at offset %zu; waiting %us (%u/%u)", offset, wait_s,
+              paced_waits, (unsigned)CONFIG_PIGEON_FOTA_RATE_LIMIT_RETRIES);
+      k_sleep(K_SECONDS(wait_s));
+      continue;
+    }
+
+    if (err) {
+      /* Retrying the same offset is safe only because nothing has been
+       * written to flash or folded into the digest yet -- the write stream
+       * is append-only, so a retry after a partial write could not be. That
+       * is why only the network step retries here, and every failure below
+       * this point still ends the call. */
+      if (++transient_retries > CONFIG_PIGEON_FOTA_CHUNK_RETRIES) {
+        LOG_ERR("FOTA: chunk download failed at offset %zu: %d (retries exhausted)", offset, err);
+        failed = true;
+        break;
+      }
+
+      /* Bounded shift: the retry budget is operator-settable, and a large
+       * one must not walk the exponent off the end of the type. */
+      uint32_t wait_s = PIGEON_FOTA_RETRY_BACKOFF_BASE_SEC << MIN(transient_retries - 1, 16U);
+
+      if (wait_s > CONFIG_PIGEON_FOTA_RETRY_AFTER_MAX_SEC) {
+        wait_s = CONFIG_PIGEON_FOTA_RETRY_AFTER_MAX_SEC;
+      }
+
+      LOG_WRN("FOTA: chunk download failed at offset %zu: %d (retry %u/%u in %us)", offset, err,
+              transient_retries, (unsigned)CONFIG_PIGEON_FOTA_CHUNK_RETRIES, wait_s);
+      k_sleep(K_SECONDS(wait_s));
+      continue;
     }
 
     if (server_total != 0 && server_total != total_size) {
@@ -472,6 +528,8 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
     }
 
     offset += got;
+    transient_retries = 0;
+    paced_waits = 0;
     LOG_INF("FOTA: downloaded %zu/%zu bytes", offset, total_size);
 
 #if defined(CONFIG_PIGEON_FOTA_RESUME)

@@ -416,6 +416,59 @@ config PIGEON_FOTA_CHUNK_YIELD_MS
     cost in total download time (chunks x yield). Tune per-fleet; the
     right value depends on link bandwidth and how chatty the app is.
 
+config PIGEON_FOTA_CHUNK_RETRIES
+  int "Consecutive transient failures tolerated per chunk"
+  default 3
+  range 0 100
+  help
+    How many times a single Range-GET may fail and be retried at the same
+    offset before pigeon_fota_apply() gives up on the transfer. The count
+    is consecutive and resets on every chunk that lands, so a long download
+    over a link that hiccups periodically is never penalized for its
+    length -- only a transfer genuinely stuck at one offset runs the budget
+    out.
+
+    Retries cover the network step alone. Nothing has been written to flash
+    or folded into the running sha256 at that point, so re-requesting the
+    same bytes is safe; a failure after the write (the stream is
+    append-only, with no way to un-write a partial chunk) still ends the
+    call, to be picked up by PIGEON_FOTA_RESUME on the next one.
+
+    0 restores the previous behavior, where the first failed chunk ended
+    the whole transfer.
+
+config PIGEON_FOTA_RATE_LIMIT_RETRIES
+  int "Consecutive rate-limit pauses tolerated per chunk"
+  default 10
+  range 0 100
+  help
+    How many times pigeon_fota_apply() will wait out an HTTP 429 at the
+    same offset before giving up. Separate from
+    PIGEON_FOTA_CHUNK_RETRIES on purpose: a 429 is the server pacing the
+    transfer, not failing it, and must not be able to spend the budget
+    reserved for real errors -- otherwise a fleet-wide rate limit would
+    read to operators as every device failing its download.
+
+    Each pause is the response's own Retry-After (clamped by
+    PIGEON_FOTA_RETRY_AFTER_MAX_SEC), or a short default when the server
+    sent none. The counter resets on every chunk that lands.
+
+config PIGEON_FOTA_RETRY_AFTER_MAX_SEC
+  int "Ceiling on a single download backoff (seconds)"
+  default 60
+  range 1 3600
+  help
+    Clamps both a server-supplied Retry-After and this library's own
+    exponential retry backoff. A server (or a misconfigured proxy in front
+    of one) asking for an hour must not be able to park a device inside
+    pigeon_fota_apply() for an hour.
+
+    Worth checking against the application's watchdog before raising:
+    pigeon_fota_apply() blocks its calling thread for the whole download
+    already, and each wait adds to that. On a device whose watchdog is fed
+    from the same thread, this value bounds one more contribution to the
+    longest stretch between feeds.
+
 config PIGEON_FOTA_CURRENT_VERSION
   string "Currently running firmware version string"
   help
