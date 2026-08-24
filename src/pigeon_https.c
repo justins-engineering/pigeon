@@ -722,9 +722,16 @@ static int pigeon_transport_download_firmware_locked(
   }
 
   *out_len = ctx.written;
-  *out_total = req.internal.response.cr_present
-                   ? (size_t)req.internal.response.content_range.total
-                   : 0;
+  /* content_range.total, not cr_present, is what says whether a total came
+   * back: cr_present is a transient parser flag, set when the Content-Range
+   * field name is seen and cleared again in the same header's value callback
+   * once the range is copied out (zephyr/subsys/net/lib/http/http_client.c),
+   * so it always reads false by the time the request returns. Reading it
+   * here made *out_total unconditionally 0, which silently disarmed
+   * pigeon_fota_apply()'s server-vs-shadow size cross-check. A total of 0 is
+   * indistinguishable from absent either way, which is exactly the "server
+   * didn't confirm a total" case callers are told to expect. */
+  *out_total = (size_t)req.internal.response.content_range.total;
 
   return 0;
 }
