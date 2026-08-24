@@ -20,6 +20,9 @@
 #include <zephyr/sys/util.h>
 
 #include "pigeon_internal.h"
+#if defined(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET)
+#include "pigeon_fota_attempts.h"
+#endif
 #if defined(CONFIG_PIGEON_FOTA_RESUME)
 #include "pigeon_fota_resume.h"
 #endif
@@ -361,6 +364,32 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   (void)pigeon_fota_resume_save(info->version, resume_from);
 #endif /* CONFIG_PIGEON_FOTA_RESUME */
 
+#if defined(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET)
+  /*
+   * What one attempt is.
+   *
+   * A campaign that starts at byte 0 spends one here, before any network
+   * traffic, so the most expensive failure shape still pays for itself: an
+   * image that downloads, verifies, swaps, and then boot-loops until
+   * MCUboot reverts never reaches any later bookkeeping, because this call
+   * never returns. Charging up front is the only placement that survives
+   * it.
+   *
+   * A resumed continuation deliberately charges nothing here. Resuming
+   * exists precisely for links that drop mid-transfer, and a budget that
+   * one dropped connection could spend would be exhausted by the exact
+   * conditions resume was written to survive -- three timeouts on a
+   * marginal link would retire a firmware version rather than merely delay
+   * it. The runaway protection instead moves to the failure path below,
+   * where a continuation that ends exactly where it began is charged: no
+   * forward progress is what distinguishes a wedged transfer from a slow
+   * one.
+   */
+  if (resume_from == 0) {
+    (void)pigeon_fota_attempts_charge(info->version);
+  }
+#endif
+
   psa_status_t pstatus = psa_crypto_init();
 
   if (pstatus != PSA_SUCCESS) {
@@ -553,6 +582,15 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   }
 
   if (failed) {
+#if defined(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET)
+    /* A continuation that never got past its resume point made no progress
+     * at all, so it is indistinguishable from a fresh attempt that failed
+     * immediately and is charged like one. Anything that advanced the
+     * flushed offset was productive and stays free, however far it got. */
+    if (resume_from > 0 && offset == resume_from) {
+      (void)pigeon_fota_attempts_charge(info->version);
+    }
+#endif
     psa_hash_abort(&hash_op);
 #if defined(CONFIG_PIGEON_FOTA_NCS)
     /* With CONFIG_PIGEON_FOTA_RESUME this keeps the persisted progress (a

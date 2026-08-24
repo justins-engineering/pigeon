@@ -478,6 +478,59 @@ config PIGEON_FOTA_RETRY_AFTER_MAX_SEC
     from the same thread, this value bounds one more contribution to the
     longest stretch between feeds.
 
+config PIGEON_FOTA_ATTEMPT_BUDGET
+  bool "Bound how many times one firmware target may be attempted"
+  default n
+  depends on SETTINGS
+  depends on !SETTINGS_NONE
+  help
+    Counts attempts at each firmware target, persistently, and stops once
+    the budget below is spent -- so an image that downloads and verifies
+    cleanly but then boot-loops until MCUboot reverts it cannot re-download
+    itself on every shadow poll forever.
+
+    The count is bound to the shadow target_version that named the
+    firmware, not to the version string alone, which is what makes it
+    recoverable. An operator who finds a device stuck and writes its shadow
+    again -- with the same firmware target still in it -- reopens the
+    budget, because target_version advances on every shadow write. Without
+    that, a handful of unlucky timeouts would retire a firmware version on
+    that device permanently, and the only way back would be republishing
+    identical bytes under a new version string. Nothing on the device can
+    fake the signal: target_version comes from the platform, and rebooting
+    or re-polling leaves it unchanged.
+
+    What one attempt means is defined in pigeon_fota_apply(): a download
+    starting from byte 0 spends one, while a PIGEON_FOTA_RESUME
+    continuation spends nothing so long as it moves the flushed offset
+    forward -- resuming is meant to be cheap, and charging for it would
+    make an interrupted transfer eat the budget in the exact conditions
+    resume exists to survive. A continuation that ends where it started
+    spends one, so a transfer wedged at a fixed offset still terminates.
+
+    Off by default. An application that already keeps its own attempt
+    counter (as the departure-board firmware does) would otherwise end up
+    with two independent budgets counting the same downloads; adopting this
+    one is a deliberate switch, paired with deleting the local copy. See
+    pigeon_fota_attempt_allowed()/pigeon_fota_attempts_clear() in pigeon.h
+    for the two calls an application needs.
+
+if PIGEON_FOTA_ATTEMPT_BUDGET
+
+config PIGEON_FOTA_MAX_ATTEMPTS_PER_VERSION
+  int "Attempts allowed per firmware target"
+  default 3
+  range 1 255
+  help
+    How many attempts one (firmware version, shadow target_version) pair
+    gets before pigeon_fota_attempt_allowed() starts answering false.
+
+    Low is fine, and lower than it would be without a recovery path: the
+    cost of exhausting the budget is no longer permanent, so this can be
+    tuned for "stop wasting the link" rather than for "never give up".
+
+endif # PIGEON_FOTA_ATTEMPT_BUDGET
+
 config PIGEON_FOTA_CURRENT_VERSION
   string "Currently running firmware version string"
   help

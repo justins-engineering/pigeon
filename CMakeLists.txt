@@ -24,6 +24,7 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backen
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_http_status.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_RESUME     src/pigeon_fota_resume.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET src/pigeon_fota_attempts.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_WS              src/pigeon_ws.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_SHELL           src/pigeon_shell.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_WATCHDOG        src/pigeon_watchdog.c)

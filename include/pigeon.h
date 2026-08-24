@@ -293,6 +293,79 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info);
  */
 int pigeon_fota_confirm_boot(void);
 
+#if defined(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET)
+
+/**
+ * @brief Whether another attempt at this firmware target is still allowed.
+ *
+ * Call before pigeon_fota_apply() to bound how many times a device will
+ * chase one firmware target. Without a bound, an image that downloads,
+ * verifies, test-swaps, and then boot-loops until MCUboot reverts it will
+ * re-download itself on every shadow poll for as long as the target stands.
+ *
+ * @param shadow_target_version The shadow's own target_version (see
+ * struct pigeon_shadow_doc), NOT the firmware version string. It is what
+ * makes the budget recoverable: the count is bound to the specific shadow
+ * write that asked for this firmware, so an operator who sees a device
+ * stuck and pushes its shadow again -- with the same firmware target still
+ * in it -- gets a fresh budget without having to invent a new version
+ * string for bytes that have not changed. A device cannot manufacture that
+ * signal for itself; target_version is assigned by the platform, and
+ * rebooting, reconnecting, or re-polling all leave it exactly as it was.
+ *
+ * A different firmware version resets the budget too, as does having no
+ * record at all. Call pigeon_fota_attempts_clear() once the target is
+ * confirmed to be the version actually running, so a later re-offer of that
+ * same version starts clean.
+ *
+ * What counts as one attempt is decided inside pigeon_fota_apply(): a
+ * download that starts from byte 0 spends one up front, while a
+ * CONFIG_PIGEON_FOTA_RESUME continuation spends nothing as long as it moves
+ * the flushed offset forward. A continuation that ends exactly where it
+ * began is not making progress and does spend one, which is what keeps a
+ * transfer stuck at a fixed offset from retrying without limit.
+ *
+ * Compiles to a no-op returning true unless
+ * CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET is enabled, so an application can call
+ * it unconditionally and let Kconfig decide whether a budget exists.
+ *
+ * @return true if pigeon_fota_apply() may be called for this target.
+ */
+bool pigeon_fota_attempt_allowed(
+    const struct pigeon_fota_info *info, int32_t shadow_target_version
+);
+
+/**
+ * @brief Forget the attempt budget for whatever target it was tracking.
+ *
+ * Call when the device observes that it IS running the offered version
+ * (pigeon_fota_update_available() answering false), so that the same
+ * version being offered again later -- after a rollback, a reflash, or a
+ * catalog change under the same string -- starts from a full budget rather
+ * than an exhausted one.
+ *
+ * Compiles to a no-op unless CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET is enabled.
+ */
+void pigeon_fota_attempts_clear(void);
+
+#else /* !CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET */
+
+/* No budget compiled in: every attempt is allowed and there is nothing to
+ * clear. Inline rather than absent so an application calls both
+ * unconditionally and Kconfig alone decides whether a budget exists. */
+static inline bool pigeon_fota_attempt_allowed(
+    const struct pigeon_fota_info *info, int32_t shadow_target_version
+) {
+  (void)info;
+  (void)shadow_target_version;
+  return true;
+}
+
+static inline void pigeon_fota_attempts_clear(void) {
+}
+
+#endif /* CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET */
+
 #if defined(CONFIG_PIGEON_WS)
 
 /**
