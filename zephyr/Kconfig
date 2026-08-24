@@ -346,7 +346,7 @@ config PIGEON_FOTA_NCS
 
 config PIGEON_FOTA_RESUME
   bool "Persist FOTA download progress across attempts and reboots"
-  default n
+  default y
   depends on SETTINGS
   depends on !SETTINGS_NONE
   select STREAM_FLASH_PROGRESS if !PIGEON_FOTA_NCS
@@ -386,8 +386,17 @@ config PIGEON_FOTA_RESUME
     CONFIG_DFU_TARGET_STREAM_SAVE_PROGRESS, whose default flips
     CONFIG_DFU_TARGET_STREAM_SYNCHRONOUS on -- every chunk is then
     flushed to flash before the next Range GET is issued, which is
-    exactly the granularity resume wants. Off by default: existing
-    builds see zero behavior change.
+    exactly the granularity resume wants.
+
+    On by default. It started off purely so that adding it changed no
+    existing build, not because it was ever found unreliable; what it
+    guards against is expensive and routine on a metered or marginal link,
+    and starting a download over from byte 0 is the more surprising
+    behavior to inherit by default. Builds without a settings backend keep
+    the old behavior automatically, since this cannot select one for them
+    (see the dependency above). Turn it off to shed the persisted state
+    entirely -- at the price of every interruption costing the whole
+    transfer again.
 
 config PIGEON_FOTA_CHUNK_SIZE
   int "FOTA download chunk size (bytes)"
