@@ -855,6 +855,147 @@ config PIGEON_RESET_CAUSE_TELEMETRY
     -ENOSYS via Zephyr's own weak default, see hwinfo_weak_impl.c), not
     a build failure, so this is safe to leave on fleet-wide.
 
+config PIGEON_TELEMETRY_BATCH
+  bool "Accumulate telemetry readings and deliver them as one batched report"
+  default n
+  depends on PIGEON_CONNECTOR_HTTPS
+  help
+    Turns each pigeon_telemetry_flush() into "close the pending keys into
+    one timestamped reading, then deliver the accumulated readings only
+    when a batch is due" instead of "send one report now". The delivered
+    body is the platform's batched form,
+    {"reports":[{"age_secs":N,"metrics":{...}},...]} (dovecote's
+    POST <endpoint>/telemetry, and the same shape inside a WS telemetry
+    frame), rather than the flat single-reading object.
+
+    What this buys, and who it buys it for: a delivery costs the platform
+    one worker request, one auth hop, one queue message, one Durable
+    Object round trip and one history write no matter how many readings
+    it carries, while the billable message count follows the readings
+    themselves. Six readings in one delivery are therefore about 3.4x
+    cheaper to serve than six deliveries, and bill the account exactly
+    what six separate reports would have. This is a cost-of-goods
+    change, not a customer discount -- and it is worth turning on only
+    for a device chatty enough for the arithmetic to matter.
+
+    It also buys the device something: readings accumulated while the
+    link is down are delivered afterwards with the age they were taken
+    at, so an outage leaves a gap-free series rather than a hole. The
+    ages are k_uptime_get() deltas -- this library has no wall clock, and
+    that is exactly why the platform's wire form is "how long ago" rather
+    than a timestamp.
+
+    Off by default: batching trades delivery latency for cost, and a
+    device reporting on a slow cadence (a 30 s departure sign, say) is
+    better served by the unbatched path, whose reading reaches the
+    dashboard as soon as it is taken. Leaving this off keeps today's
+    behavior exactly -- same flat body, same clear-on-success, same
+    per-flush delivery.
+
+    HTTPS connector only for now. The CoAP terminator frames requests
+    differently and its batched shape has not been specified yet, so
+    CoAP builds keep the flat per-flush report.
+
+if PIGEON_TELEMETRY_BATCH
+
+config PIGEON_TELEMETRY_BATCH_DEPTH
+  int "Readings per batch, and readings the buffer holds"
+  default 6
+  range 2 64
+  help
+    Both the delivery trigger and the buffer's own depth: a batch is due
+    once this many readings are buffered, and a reading recorded past
+    that drops the oldest one. The two are deliberately the same number,
+    since holding more readings than a delivery can carry would only
+    guarantee that the surplus is dropped rather than sent.
+
+    The default of 6 is the profile the platform's COGS model was priced
+    on -- one reading every 10 s delivered once a minute, which is where
+    most of the saving already is (3.4x; the cap of 64 only reaches
+    5.9x). 64 is the platform's own per-batch cap
+    (capsules::MAX_TELEMETRY_BATCH_READINGS); a batch over it is refused
+    whole with 400, so this range cannot be raised past it.
+
+    Note the interaction with the distinct-key cap: the platform refuses
+    a batch carrying more than 128 distinct keys across the union of its
+    readings. A device reporting the same key set every reading is never
+    close to it, which is the normal case; a device that rotates key
+    names across readings can reach it with this knob set high, and the
+    refusal drops the whole batch (loudly -- see the flush-failure
+    handling in pigeon_core.c). Depth x CONFIG_PIGEON_TELEMETRY_MAX_KEYS
+    at or under 128 makes that unreachable by construction.
+
+config PIGEON_TELEMETRY_BATCH_BUF_SIZE
+  int "Accumulation arena for buffered readings (bytes)"
+  default 2048
+  range 256 8192
+  help
+    Static byte budget holding the buffered readings' already-escaped
+    JSON metrics fragments back to back. This, not the depth above, is
+    usually the binding constraint: it must cover DEPTH readings' worth
+    of whatever key/value set the application actually reports (five
+    short numeric keys run about 100 bytes a reading, so the 2048
+    default carries the default depth several times over).
+
+    Sized too small it is not a correctness problem, only a throughput
+    one: a batch becomes due once the arena is three quarters full, so
+    the buffer spends its capacity on deliveries rather than on drops.
+    Readings are only ever dropped -- oldest first, counted, and warned
+    about once per flush -- when deliveries themselves are failing and
+    new readings keep arriving.
+
+    Total static RAM for this feature is roughly twice this value: the
+    arena, plus the assembled body buffer that the transport sends from
+    (see PIGEON_TELEMETRY_BATCH_BODY_MAX in
+    src/pigeon_telemetry_batch.h). The build fails rather than the
+    device 413s if this and the depth together could ever emit a body
+    over the platform's 16 KiB batch cap.
+
+config PIGEON_TELEMETRY_BATCH_MAX_AGE_SEC
+  int "Deliver a partial batch once its oldest reading is this old (seconds)"
+  default 60
+  range 1 3600
+  help
+    Upper bound on how long a reading waits for company. Without it a
+    device that stops sampling -- or samples more slowly than the depth
+    trigger assumes -- would hold its last few readings indefinitely,
+    and its connection-state badge on the dashboard would go stale even
+    though the device is healthy.
+
+    The default pairs with the default depth: one reading every 10 s
+    reaches 6 readings in a minute, so the depth trigger fires first and
+    this one only covers a device that went quiet.
+
+    Keep this comfortably under CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC on a
+    build using CONFIG_PIGEON_WATCHDOG without CONFIG_PIGEON_WS: a
+    successful delivery is what feeds that watchdog, and batching is
+    what lengthens the gap between deliveries. The build asserts the
+    ordering rather than leaving it to be discovered as a reboot loop.
+
+config PIGEON_TELEMETRY_BATCH_BACKOFF_MAX_SEC
+  int "Cap on the retry delay after a failed batch delivery (seconds)"
+  default 300
+  range 1 3600
+  help
+    A failed delivery does not consume the buffer: the readings stay,
+    and the next flush that would have sent them waits out a backoff
+    first -- doubling from 5 s to this cap, with +-25% jitter so a fleet
+    sharing an outage does not retry in lockstep and rebuild the spike
+    it is backing off from.
+
+    A 429 overrides the schedule with the server's own Retry-After when
+    it sends a usable one, clamped to this cap. That is the response a
+    free-tier account gets once its pooled message allowance is spent,
+    and the platform documents the device as backing off and keeping its
+    readings queued -- which is exactly what this does.
+
+    Two failures are not paced but dropped, loudly: 400 and 413 mean the
+    batch itself violates a cap (too many readings, too many distinct
+    keys, an oversized key, value, or body), and resending those same
+    bytes fails identically forever.
+
+endif # PIGEON_TELEMETRY_BATCH
+
 endif # PIGEON
 
 # Not nested under "if PIGEON": pigeon_core.c (which reads these) is compiled

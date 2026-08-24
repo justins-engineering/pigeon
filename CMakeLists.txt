@@ -28,6 +28,7 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_ud
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_HTTPS src/pigeon_https.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backend.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_TELEMETRY_BATCH src/pigeon_telemetry_batch.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_RESUME     src/pigeon_fota_resume.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET src/pigeon_fota_attempts.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_WS              src/pigeon_ws.c)
