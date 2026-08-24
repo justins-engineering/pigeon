@@ -32,6 +32,10 @@
 
 #include "pigeon_internal.h"
 
+#if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
+#include "pigeon_telemetry_batch.h"
+#endif
+
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 #define PIGEON_WS_HOST_MAX 128
@@ -651,6 +655,41 @@ int pigeon_ws_report_telemetry(const char *metrics, size_t metrics_len) {
 
   return pigeon_ws_send_text(pigeon_ws_telemetry_frame, (size_t)len, false);
 }
+
+#if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
+/* Sized off the batch body cap rather than reusing the flat frame buffer
+ * above: a batch is up to CONFIG_PIGEON_TELEMETRY_BATCH_DEPTH readings, so
+ * the two differ by more than a constant and one buffer sized for both
+ * would leave the flat path carrying the batch path's RAM. Same
+ * single-owner-thread reasoning as every other scratch buffer in this file:
+ * only pigeon_telemetry_flush() reaches it, and that is single-app-thread
+ * by contract (see pigeon.h). The build asserts in
+ * pigeon_telemetry_batch.h keep the framed result under the server's 16 KiB
+ * MAX_WS_FRAME_BYTES cap, which is the same number as its batch-body cap. */
+static char pigeon_ws_telemetry_batch_frame[PIGEON_TELEMETRY_BATCH_BODY_MAX + 32];
+
+int pigeon_ws_report_telemetry_batch(const char *reports, size_t reports_len) {
+  if (!reports || !reports_len) {
+    return -EINVAL;
+  }
+
+  /* reports arrives as a complete JSON array of reading objects, escaped
+   * and framed by pigeon_telemetry_batch_build() -- this just names the
+   * field the server reads it from. "reports" and "metrics" are
+   * alternatives on this frame type, never both. */
+  int len = snprintk(
+      pigeon_ws_telemetry_batch_frame, sizeof(pigeon_ws_telemetry_batch_frame),
+      "{\"type\":\"telemetry\",\"reports\":%s}", reports
+  );
+
+  if (len < 0 || (size_t)len >= sizeof(pigeon_ws_telemetry_batch_frame)) {
+    LOG_ERR("WS: telemetry batch frame build overflowed (len=%d)", len);
+    return -EMSGSIZE;
+  }
+
+  return pigeon_ws_send_text(pigeon_ws_telemetry_batch_frame, (size_t)len, false);
+}
+#endif /* CONFIG_PIGEON_TELEMETRY_BATCH */
 
 #if defined(CONFIG_PIGEON_SHELL)
 /*

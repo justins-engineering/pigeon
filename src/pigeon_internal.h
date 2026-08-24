@@ -94,12 +94,20 @@ size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
  * dovecote's report_telemetry_device (latest-value-per-key upsert of every
  * key in the body).
  *
+ * Under CONFIG_PIGEON_TELEMETRY_BATCH the body is the batched form
+ * ({"reports":[...]}, built by pigeon_telemetry_batch_build()) instead, and
+ * is bounded by PIGEON_TELEMETRY_BATCH_BODY_MAX; the route accepts both
+ * shapes and tells them apart by shape alone, so this hook needs no mode of
+ * its own.
+ *
  * res is optional (NULL is fine) and reports what the server actually said,
  * same convention as pigeon_transport_download_firmware() below: it is what
  * lets a caller tell a paced request (429, returned as -EAGAIN with any
- * Retry-After in res->retry_after_sec) from a link that is merely down. The
- * CoAP implementation zeroes it -- CoAP response codes are not HTTP statuses,
- * and nothing on that transport consumes this yet.
+ * Retry-After in res->retry_after_sec) from a batch the platform refuses on
+ * its own merits (400/413, which no amount of retrying will fix) from a
+ * link that is merely down. The CoAP implementation zeroes it -- CoAP
+ * response codes are not HTTP statuses, and nothing on that transport
+ * consumes this yet.
  */
 int pigeon_transport_report_telemetry(
     const char *body, size_t body_len, struct pigeon_http_result *res
@@ -183,6 +191,23 @@ int pigeon_transport_download_firmware(
  * pigeon_core.c for the fallback wiring).
  */
 int pigeon_ws_report_telemetry(const char *metrics, size_t metrics_len);
+
+#if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
+/*
+ * Batched sibling of pigeon_ws_report_telemetry() above: wraps an
+ * already-built reports array as {"type":"telemetry","reports":<reports>}
+ * and sends it as ONE frame. Same -ENOTCONN-on-a-down-socket convention,
+ * same fire-and-forget caveat -- with one consequence worth stating, since
+ * batching adds a failure the flat form does not have: a frame carrying a
+ * batch the platform would refuse for a cap violation is dropped
+ * server-side with no reply, so over WS that refusal is invisible and the
+ * readings are simply gone. The HTTPS path answers 400/413 and the caller
+ * can say so. This is the existing telemetry-over-WS trade (no ack), not a
+ * new one, but it is why the batch caps are enforced at build time on this
+ * side rather than relied on to come back as an error.
+ */
+int pigeon_ws_report_telemetry_batch(const char *reports, size_t reports_len);
+#endif /* CONFIG_PIGEON_TELEMETRY_BATCH */
 #endif /* CONFIG_PIGEON_WS */
 
 #if defined(CONFIG_PIGEON_SHELL)

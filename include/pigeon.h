@@ -105,6 +105,12 @@ int pigeon_init(const struct pigeon_config *config);
  * application thread, the same implicit contract the old single-slot
  * pigeon_set_shadow_param() store always had.
  *
+ * Under CONFIG_PIGEON_TELEMETRY_BATCH the pending store becomes the reading
+ * being assembled rather than the report about to be sent: the keys set here
+ * are closed into one timestamped reading by the next
+ * pigeon_telemetry_record() or pigeon_telemetry_flush(). Setting a key twice
+ * before that still overwrites, so one reading holds one value per key.
+ *
  * @param key Telemetry key (at most 31 bytes).
  * @param val Value payload string (at most 127 bytes).
  * @return 0 on success; -EINVAL on NULL key/val; -ENODEV before
@@ -146,11 +152,111 @@ int pigeon_telemetry_set(const char *key, const char *val);
  * up to 6x growth) may split one flush into consecutive reports, each with
  * the same clear-on-success semantics -- never a truncated or invalid body.
  *
- * @return 0 on success (all pending keys sent and cleared), -ENODATA if
- * nothing is queued, -ENODEV before pigeon_init(), negative error code on
- * transport/auth failure (unsent keys kept queued).
+ * Under CONFIG_PIGEON_TELEMETRY_BATCH this call means something slightly
+ * different, and an application written against it needs no change to get
+ * the new behavior: the pending keys are closed into one timestamped
+ * READING (see pigeon_telemetry_record()), and the accumulated readings are
+ * delivered as ONE batched report only when a batch is due -- at
+ * CONFIG_PIGEON_TELEMETRY_BATCH_DEPTH readings, or once the oldest reaches
+ * CONFIG_PIGEON_TELEMETRY_BATCH_MAX_AGE_SEC. A call that buffers without
+ * delivering returns 0: the reading was accepted and nothing was lost, which
+ * is what an existing "if (err) LOG_ERR" caller should keep quiet about. Use
+ * pigeon_telemetry_batch_pending() to see how much is waiting, and
+ * pigeon_telemetry_flush_now() to deliver regardless.
+ *
+ * @return 0 on success (all pending keys sent and cleared; under
+ * CONFIG_PIGEON_TELEMETRY_BATCH, also when the reading was buffered and no
+ * batch is due yet), -ENODATA if nothing is queued, -ENODEV before
+ * pigeon_init(), negative error code on transport/auth failure (unsent keys
+ * kept queued).
  */
 int pigeon_telemetry_flush(void);
+
+#if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
+
+/**
+ * @brief Close the pending telemetry keys into one timestamped reading.
+ *
+ * Takes a snapshot of every key set since the last reading, stamps it with
+ * the current uptime, and buffers it for a later batched delivery -- then
+ * empties the pending store so the next pigeon_telemetry_set() begins a
+ * fresh reading. Sends nothing.
+ *
+ * Call this only when sampling faster than delivering: an application whose
+ * every sample is followed by pigeon_telemetry_flush() never needs it, since
+ * flush closes the pending keys itself. It exists for the app that wants,
+ * say, a reading every 10 s but a delivery every minute, on one thread with
+ * one timer.
+ *
+ * The reading's age travels as seconds-before-delivery, computed from
+ * k_uptime_get() deltas. That is the whole reason the platform's batched
+ * wire form is relative rather than absolute: this library has no wall
+ * clock, and a monotonic delta is the one time measurement it can make
+ * honestly.
+ *
+ * Buffering is bounded by CONFIG_PIGEON_TELEMETRY_BATCH_DEPTH readings and
+ * CONFIG_PIGEON_TELEMETRY_BATCH_BUF_SIZE bytes. Past either, the OLDEST
+ * buffered readings are dropped to make room and counted -- the next flush
+ * warns with the total. That only happens while deliveries are failing; in
+ * the steady state a full buffer is a delivery, not a drop.
+ *
+ * Compiles to a no-op returning 0 unless CONFIG_PIGEON_TELEMETRY_BATCH is
+ * enabled, so an application can call it unconditionally and let Kconfig
+ * decide whether readings are timestamped separately or collapse into the
+ * next flat report.
+ *
+ * @return 0 on success, -ENODATA if no keys are pending, -ENODEV before
+ * pigeon_init(), or a negative error if the reading could not be buffered
+ * (its keys stay pending for the next attempt).
+ */
+int pigeon_telemetry_record(void);
+
+/**
+ * @brief Deliver the buffered readings now, whether or not a batch is due.
+ *
+ * Same delivery as pigeon_telemetry_flush(), with the depth/age triggers and
+ * the post-failure backoff bypassed. Intended for the moments an application
+ * knows are its last: before a deliberate reboot, before
+ * pigeon_fota_apply()'s swap, or when shutting down connectivity -- anywhere
+ * buffered readings would otherwise be discarded with the RAM holding them.
+ *
+ * Bypassing the backoff makes this an explicit, one-shot request rather than
+ * a loop to sit in; calling it repeatedly against a refusing server is the
+ * behavior the backoff exists to prevent.
+ *
+ * Without CONFIG_PIGEON_TELEMETRY_BATCH this is exactly
+ * pigeon_telemetry_flush(), which already delivers on every call.
+ *
+ * @return as pigeon_telemetry_flush(), except that a buffered-but-not-due
+ * batch cannot be the reason for a 0.
+ */
+int pigeon_telemetry_flush_now(void);
+
+/**
+ * @brief How many readings are buffered awaiting delivery.
+ *
+ * The observability half of pigeon_telemetry_flush() returning 0 for a
+ * reading it only buffered: an application that wants to know whether its
+ * data has actually left the device can watch this instead of inferring it
+ * from a return code that deliberately does not distinguish. Returns 0
+ * without CONFIG_PIGEON_TELEMETRY_BATCH, where nothing is ever buffered
+ * between flushes.
+ */
+int pigeon_telemetry_batch_pending(void);
+
+#else /* !CONFIG_PIGEON_TELEMETRY_BATCH */
+
+/* No batching compiled in: a reading is whatever the next flush sends, there
+ * is never a buffered batch to force out or to count. Inline rather than
+ * absent so an application calls all three unconditionally and Kconfig alone
+ * decides whether readings are timestamped separately. */
+static inline int pigeon_telemetry_record(void) { return 0; }
+
+static inline int pigeon_telemetry_flush_now(void) { return pigeon_telemetry_flush(); }
+
+static inline int pigeon_telemetry_batch_pending(void) { return 0; }
+
+#endif /* CONFIG_PIGEON_TELEMETRY_BATCH */
 
 /**
  * @brief Queue data or metrics to push to the digital twin edge instance.
