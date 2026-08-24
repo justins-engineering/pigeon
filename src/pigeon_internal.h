@@ -9,6 +9,8 @@
 
 #include <pigeon.h>
 
+#include "pigeon_http_status.h"
+
 /*
  * Implemented in pigeon_core.c. Serializes TLS handshakes across every
  * transport module -- see the mutex's own comment there for why the modem
@@ -91,8 +93,17 @@ size_t pigeon_json_escape(const char *in, char *out, size_t out_len);
  * including the NUL) to the platform: POST <endpoint>/telemetry, matching
  * dovecote's report_telemetry_device (latest-value-per-key upsert of every
  * key in the body).
+ *
+ * res is optional (NULL is fine) and reports what the server actually said,
+ * same convention as pigeon_transport_download_firmware() below: it is what
+ * lets a caller tell a paced request (429, returned as -EAGAIN with any
+ * Retry-After in res->retry_after_sec) from a link that is merely down. The
+ * CoAP implementation zeroes it -- CoAP response codes are not HTTP statuses,
+ * and nothing on that transport consumes this yet.
  */
-int pigeon_transport_report_telemetry(const char *body, size_t body_len);
+int pigeon_transport_report_telemetry(
+    const char *body, size_t body_len, struct pigeon_http_result *res
+);
 
 /*
  * Implemented by whichever transport module is compiled in, same as
@@ -115,8 +126,6 @@ int pigeon_transport_report_telemetry(const char *body, size_t body_len);
 int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
 
 #if defined(CONFIG_PIGEON_FOTA)
-#include "pigeon_http_status.h"
-
 /*
  * Implemented only by pigeon_https.c (CONFIG_PIGEON_FOTA depends on
  * CONFIG_PIGEON_CONNECTOR_HTTPS -- no CoAP download transport yet). Issues

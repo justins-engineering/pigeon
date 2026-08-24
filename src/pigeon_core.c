@@ -383,7 +383,10 @@ int pigeon_telemetry_flush(void) {
     err = pigeon_ws_report_telemetry(pigeon_telemetry_body, body_len);
     if (err == -ENOTCONN)
 #endif
-    err = pigeon_transport_report_telemetry(pigeon_telemetry_body, body_len);
+    /* No result out-param: an unbatched report has nothing to pace. Its keys
+     * stay queued on any failure and ride the app's next flush, which is the
+     * same thing a Retry-After would have asked for. */
+    err = pigeon_transport_report_telemetry(pigeon_telemetry_body, body_len, NULL);
 
     if (err) {
       /* Clear-on-success, per report: nothing from THIS report (nor any

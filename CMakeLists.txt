@@ -14,6 +14,12 @@ zephyr_include_directories(include)
 # Bind the underlying core implementation sources
 zephyr_library_sources(src/pigeon_core.c)
 
+# Unconditional since the telemetry POST reads Retry-After on every build, not
+# just FOTA ones: a 429 from the free-tier allowance fuse is something any
+# device can meet, and answering it with a bare -EIO is what made a paced
+# request indistinguishable from a broken one. One pure parse function.
+zephyr_library_sources(src/pigeon_http_status.c)
+
 # Conditionally compile modules based on structural Kconfig choices
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP  src/pigeon_coap.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tcp.c)
@@ -22,7 +28,6 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_ud
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_HTTPS src/pigeon_https.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backend.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
-zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_http_status.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_RESUME     src/pigeon_fota_resume.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET src/pigeon_fota_attempts.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_WS              src/pigeon_ws.c)

@@ -365,7 +365,85 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   return err;
 }
 
-static int pigeon_transport_report_telemetry_locked(const char *body, size_t body_len) {
+/* Retry-After capture.
+ *
+ * Zephyr's http_client exposes no way to read an arbitrary response header,
+ * but it does forward every header field/value fragment to an
+ * application-supplied http_parser_settings (struct http_request::http_cb)
+ * before consuming it, which is how this reads the one header it cares
+ * about without patching the vendored client.
+ *
+ * One module-static capture slot is enough for every caller: each of them
+ * runs entirely inside the shared transport lock, so no two requests can be
+ * parsing headers at the same time. Each resets the slot before issuing its
+ * own request rather than trusting the previous caller to have left it
+ * clean.
+ */
+#define PIGEON_HTTPS_RETRY_AFTER_MAX 32
+
+static struct {
+  char value[PIGEON_HTTPS_RETRY_AFTER_MAX];
+  uint8_t len;
+  bool capturing;
+} pigeon_https_retry_after;
+
+static int pigeon_https_on_header_field(
+    struct http_parser *parser, const char *at, size_t length
+) {
+  ARG_UNUSED(parser);
+  static const char retry_after[] = "Retry-After";
+
+  /* Exact length, not a prefix match, so a longer header that merely starts
+   * the same way (Retry-After-Policy and friends) can't be mistaken for
+   * this one. A field name split across two socket reads is missed rather
+   * than mismatched -- the same limitation the vendored client's own
+   * Content-Length detection carries, and the safe direction: a missed
+   * header means the caller uses its own backoff. */
+  pigeon_https_retry_after.capturing =
+      (length == sizeof(retry_after) - 1) &&
+      (strncasecmp(at, retry_after, sizeof(retry_after) - 1) == 0);
+
+  return 0;
+}
+
+static int pigeon_https_on_header_value(
+    struct http_parser *parser, const char *at, size_t length
+) {
+  ARG_UNUSED(parser);
+
+  if (!pigeon_https_retry_after.capturing) {
+    return 0;
+  }
+
+  /* Accumulate instead of overwrite: the parser hands over however many
+   * fragments the value happened to be split into. Anything past the
+   * buffer is dropped, which can only ever shrink an implausibly long
+   * value that the cap would have clamped anyway. */
+  size_t room = sizeof(pigeon_https_retry_after.value) - pigeon_https_retry_after.len;
+  size_t n = MIN(length, room);
+
+  memcpy(pigeon_https_retry_after.value + pigeon_https_retry_after.len, at, n);
+  pigeon_https_retry_after.len += (uint8_t)n;
+
+  return 0;
+}
+
+static const struct http_parser_settings pigeon_https_header_cb = {
+    .on_header_field = pigeon_https_on_header_field,
+    .on_header_value = pigeon_https_on_header_value,
+};
+
+/* Outer bound on a Retry-After this path will believe, before the flush
+ * policy clamps it again to its own CONFIG_PIGEON_TELEMETRY_BATCH_BACKOFF_MAX_SEC.
+ * An hour is generous rather than tuned: the number that governs how long a
+ * device actually waits belongs to the caller, and the only job of a cap
+ * here is to keep a hostile or broken field from being accumulated into
+ * something absurd on its way out of the parser. */
+#define PIGEON_HTTPS_TELEMETRY_RETRY_AFTER_MAX_SEC 3600
+
+static int pigeon_transport_report_telemetry_locked(
+    const char *body, size_t body_len, struct pigeon_http_result *res
+) {
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -389,12 +467,15 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
 
   pigeon_https_body_len = 0;
   pigeon_https_body[0] = '\0';
+  pigeon_https_retry_after.len = 0;
+  pigeon_https_retry_after.capturing = false;
 
   /* body arrives pre-escaped and pre-framed (one flat JSON object of every
-   * pending key) from pigeon_core.c's pigeon_telemetry_flush() -- this
-   * transport just moves the bytes, same as pigeon_transport_upload_logs()
-   * below. pigeon_json_escape() and the body building live in
-   * pigeon_core.c, not here. */
+   * pending key, or -- under CONFIG_PIGEON_TELEMETRY_BATCH -- the batched
+   * {"reports":[...]} form) from pigeon_core.c's pigeon_telemetry_flush().
+   * This transport just moves the bytes, same as
+   * pigeon_transport_upload_logs() below. pigeon_json_escape() and the body
+   * building live in pigeon_core.c, not here. */
   struct http_request req = {
       .method = HTTP_POST,
       .url = url,
@@ -407,17 +488,40 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
       .response = pigeon_https_response_cb,
       .recv_buf = pigeon_https_recv_buf,
       .recv_buf_len = sizeof(pigeon_https_recv_buf),
+      .http_cb = &pigeon_https_header_cb,
   };
 
   err = http_client_req(sock, &req, 10000, NULL);
   zsock_close(sock);
+
+  /* Recorded before the error check: a request that fails late may still
+   * have parsed a status line, and that status is the most useful thing the
+   * caller can be told about the failure. */
+  res->status = req.internal.response.http_status_code;
+  res->retry_after_sec = pigeon_http_parse_retry_after(
+      pigeon_https_retry_after.value, pigeon_https_retry_after.len,
+      PIGEON_HTTPS_TELEMETRY_RETRY_AFTER_MAX_SEC
+  );
 
   if (err < 0) {
     LOG_ERR("Telemetry report POST request failed: %d", err);
     return err;
   }
 
-  uint16_t status = req.internal.response.http_status_code;
+  uint16_t status = res->status;
+
+  /* A 429 here is the platform pacing this device, not refusing its data:
+   * it is what a free-tier account gets for the rest of a billing period
+   * once its pooled message allowance is spent, and what any per-pigeon
+   * limiter answers. -EIO would make it indistinguishable from a broken
+   * link, and a caller that cannot tell those apart either abandons data
+   * that was never rejected or comes straight back into the limit. The
+   * delay itself rides in res->retry_after_sec; the caller decides how long
+   * to wait. */
+  if (status == 429) {
+    LOG_WRN("Telemetry report POST rate-limited (Retry-After: %us)", res->retry_after_sec);
+    return -EAGAIN;
+  }
 
   if (status < 200 || status >= 300) {
     LOG_ERR(
@@ -429,14 +533,27 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
   return 0;
 }
 
-int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+int pigeon_transport_report_telemetry(
+    const char *body, size_t body_len, struct pigeon_http_result *res
+) {
   if (!body || !body_len) {
     return -EINVAL;
   }
 
+  /* res is optional, and the helper below always has somewhere to write, so
+   * it needs no NULL check of its own on any exit path. */
+  struct pigeon_http_result scratch = {0};
+
+  if (res) {
+    res->status = 0;
+    res->retry_after_sec = 0;
+  } else {
+    res = &scratch;
+  }
+
   (void)pigeon_transport_lock(K_FOREVER);
 
-  int err = pigeon_transport_report_telemetry_locked(body, body_len);
+  int err = pigeon_transport_report_telemetry_locked(body, body_len, res);
 
   pigeon_transport_unlock();
 
@@ -646,72 +763,6 @@ static int pigeon_https_fota_response_cb(
 
   return 0;
 }
-
-/* Retry-After capture.
- *
- * Zephyr's http_client exposes no way to read an arbitrary response header,
- * but it does forward every header field/value fragment to an
- * application-supplied http_parser_settings (struct http_request::http_cb)
- * before consuming it, which is how this reads the one header it cares
- * about without patching the vendored client.
- *
- * One module-static capture slot is enough: this path runs entirely inside
- * the shared transport lock, so no other request can be parsing headers
- * while this one is.
- */
-#define PIGEON_HTTPS_RETRY_AFTER_MAX 32
-
-static struct {
-  char value[PIGEON_HTTPS_RETRY_AFTER_MAX];
-  uint8_t len;
-  bool capturing;
-} pigeon_https_retry_after;
-
-static int pigeon_https_on_header_field(
-    struct http_parser *parser, const char *at, size_t length
-) {
-  ARG_UNUSED(parser);
-  static const char retry_after[] = "Retry-After";
-
-  /* Exact length, not a prefix match, so a longer header that merely starts
-   * the same way (Retry-After-Policy and friends) can't be mistaken for
-   * this one. A field name split across two socket reads is missed rather
-   * than mismatched -- the same limitation the vendored client's own
-   * Content-Length detection carries, and the safe direction: a missed
-   * header means the caller uses its own backoff. */
-  pigeon_https_retry_after.capturing =
-      (length == sizeof(retry_after) - 1) &&
-      (strncasecmp(at, retry_after, sizeof(retry_after) - 1) == 0);
-
-  return 0;
-}
-
-static int pigeon_https_on_header_value(
-    struct http_parser *parser, const char *at, size_t length
-) {
-  ARG_UNUSED(parser);
-
-  if (!pigeon_https_retry_after.capturing) {
-    return 0;
-  }
-
-  /* Accumulate instead of overwrite: the parser hands over however many
-   * fragments the value happened to be split into. Anything past the
-   * buffer is dropped, which can only ever shrink an implausibly long
-   * value that the cap would have clamped anyway. */
-  size_t room = sizeof(pigeon_https_retry_after.value) - pigeon_https_retry_after.len;
-  size_t n = MIN(length, room);
-
-  memcpy(pigeon_https_retry_after.value + pigeon_https_retry_after.len, at, n);
-  pigeon_https_retry_after.len += (uint8_t)n;
-
-  return 0;
-}
-
-static const struct http_parser_settings pigeon_https_header_cb = {
-    .on_header_field = pigeon_https_on_header_field,
-    .on_header_value = pigeon_https_on_header_value,
-};
 
 static int pigeon_transport_download_firmware_locked(
     size_t offset, uint8_t *buf, size_t buf_len, size_t *out_len, size_t *out_total,

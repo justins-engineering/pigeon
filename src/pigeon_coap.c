@@ -474,9 +474,21 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
   return 0;
 }
 
-int pigeon_transport_report_telemetry(const char *body, size_t body_len) {
+int pigeon_transport_report_telemetry(
+    const char *body, size_t body_len, struct pigeon_http_result *res
+) {
   if (!body || !body_len) {
     return -EINVAL;
+  }
+
+  /* CoAP answers in response codes, not HTTP statuses, and nothing on this
+   * transport consumes the result yet (CONFIG_PIGEON_TELEMETRY_BATCH, the
+   * only caller that reads it, depends on the HTTPS connector). Zeroed
+   * rather than left untouched so a future caller reads "no status" instead
+   * of whatever the caller happened to initialize it with. */
+  if (res) {
+    res->status = 0;
+    res->retry_after_sec = 0;
   }
 
   (void)pigeon_transport_lock(K_FOREVER);
