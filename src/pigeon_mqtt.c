@@ -680,6 +680,22 @@ static int pigeon_mqtt_connect_once(void) {
     LOG_WRN("MQTT: failed to set SO_SNDTIMEO: %d (sends may block unbounded)", -errno);
   }
 
+  /* Which suite the handshake actually landed on, which is not something
+   * either side's configuration answers on its own: the broker lists its
+   * PSK suites first with server preference, and what a constrained
+   * mbedTLS build offers is decided by its PSA wants rather than by any
+   * explicit list. Best-effort, and read once per session -- some offloaded
+   * stacks do not implement the option. */
+  int suite = 0;
+  socklen_t suite_len = sizeof(suite);
+
+  if (zsock_getsockopt(
+          pigeon_mqtt_client.transport.tls.sock, SOL_TLS, TLS_CIPHERSUITE_USED, &suite,
+          &suite_len
+      ) == 0) {
+    LOG_INF("MQTT TLS ciphersuite: 0x%04x", suite);
+  }
+
   k_mutex_unlock(&pigeon_mqtt_tx_lock);
 
   int64_t deadline = k_uptime_get() + PIGEON_MQTT_ACK_TIMEOUT_MS;
