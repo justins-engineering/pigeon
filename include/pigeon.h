@@ -15,7 +15,8 @@ extern "C" {
  */
 enum pigeon_connector_type {
   PIGEON_CONNECTOR_HTTPS,
-  PIGEON_CONNECTOR_COAP
+  PIGEON_CONNECTOR_COAP,
+  PIGEON_CONNECTOR_MQTT
 };
 
 /*
@@ -51,14 +52,47 @@ struct pigeon_coap_config {
   const char *tls_psk_secret;
 };
 
-/* Mirrors capsules::Connector (tagged union: Https(HttpsConfig) | Coap(CoapConfig)). */
+/*
+ * PSK credentials for the MQTT connector's TLS session, mirroring
+ * capsules::MqttConfig's tls_psk_identity/tls_psk_secret -- the same pair
+ * capsules::CoapConfig carries, and for the same reason: identity is the
+ * pigeon id, secret the short key minted alongside the bearer token, and
+ * the handshake they complete is the device's entire authentication (the
+ * broker resolves this pigeon's token server-side from the identity, so no
+ * credential rides inside an MQTT packet).
+ *
+ * Consulted only on a CONFIG_PIGEON_MQTT_AUTH_PSK build; a certificate
+ * build authenticates with CONFIG_PIGEON_TOKEN as the CONNECT password
+ * instead and leaves both fields NULL. NULL means absent
+ * (Option<String>::None), and a non-NULL empty string does NOT: that is a
+ * supplied zero-length credential, which fails every handshake.
+ */
+struct pigeon_mqtt_config {
+  const char *tls_psk_identity;
+  const char *tls_psk_secret;
+};
+
+/*
+ * Mirrors capsules::Connector (tagged union: Https(HttpsConfig) |
+ * Coap(CoapConfig) | Mqtt(MqttConfig)).
+ */
 struct pigeon_connector {
   enum pigeon_connector_type type;
   struct pigeon_coap_config coap; /* only consulted when type == PIGEON_CONNECTOR_COAP */
+  struct pigeon_mqtt_config mqtt; /* only consulted when type == PIGEON_CONNECTOR_MQTT */
 };
 
 struct pigeon_config {
-  const char *device_id; /* Durable Object / pigeon ID */
+  /*
+   * Durable Object / pigeon ID. The HTTPS and CoAP connectors carry the
+   * pigeon's identity in the endpoint URL or the PSK identity and use this
+   * only for logging, so those samples pass a readable placeholder. The
+   * MQTT connector does NOT: its endpoint names the broker rather than the
+   * pigeon, so this string is the CONNECT client id and username, the
+   * broker refuses anything that is not 64 lowercase hex, and it must
+   * agree with the PSK identity on a PSK build.
+   */
+  const char *device_id;
   struct pigeon_connector connector;
 };
 
@@ -287,6 +321,14 @@ int pigeon_shadow_flush(void);
  * target_config is the caller's job (this
  * library does not parse it, see pigeon_shadow_doc); call pigeon_shadow_report()
  * afterwards to confirm what was applied.
+ *
+ * On CONFIG_PIGEON_CONNECTOR_MQTT nothing is fetched: the broker publishes
+ * the pigeon's target shadow as a retained message and this call serves
+ * whatever arrived last, so a polling loop written against the other
+ * connectors keeps working unchanged while costing no traffic at all. The
+ * first call after a connect waits up to
+ * CONFIG_PIGEON_MQTT_SHADOW_WAIT_SEC for that retained value and returns
+ * -EAGAIN if it has not landed yet; -ENOTCONN means the session is down.
  *
  * target_config/current_config point into a static buffer owned by this
  * function: valid only until the next call, and only for the connector type
@@ -570,6 +612,52 @@ int pigeon_ws_stop(void);
 bool pigeon_ws_connected(void);
 
 #endif /* CONFIG_PIGEON_WS */
+
+#if defined(CONFIG_PIGEON_CONNECTOR_MQTT)
+
+/**
+ * @brief Start the MQTT session this connector's transport rides on.
+ *
+ * Spawns a worker thread that connects to CONFIG_PIGEON_ENDPOINT,
+ * authenticates (certificate plus token, or TLS-PSK -- see
+ * PIGEON_MQTT_AUTH), subscribes to the retained pigeon/shadow/target, and
+ * reconnects forever with backoff on any drop. Call once per boot, after
+ * pigeon_init() and after the network is up.
+ *
+ * Unlike pigeon_ws_start(), this is not an optional extra channel: it IS
+ * the transport. Every publish this library makes (telemetry, shadow
+ * reports, log chunks) and every shadow it serves goes through the session
+ * this call establishes, so pigeon_shadow_get() and the telemetry flush
+ * answer -ENOTCONN until it is up.
+ *
+ * @param cb Event callback, invoked from the worker thread. May be NULL if
+ *           the app polls pigeon_shadow_get() instead of reacting to a
+ *           push; the session works either way.
+ * @return 0 on success, negative errno if the worker could not be started.
+ */
+int pigeon_mqtt_start(pigeon_event_cb_t cb);
+
+/**
+ * @brief Gracefully end the MQTT session.
+ *
+ * Sends a real DISCONNECT (rather than dropping the socket, which the
+ * broker would treat as ungraceful and answer by publishing this session's
+ * will if one were set) and joins the worker thread. Call before
+ * sys_reboot() -- the shadow "reboot" command, or a FOTA swap -- so the
+ * platform sees a clean close.
+ *
+ * @return 0 on success, negative errno if the teardown was not clean (the
+ *         thread is joined either way).
+ */
+int pigeon_mqtt_stop(void);
+
+/**
+ * @brief Whether the MQTT session is currently up.
+ * @return true if connected, false if disconnected/reconnecting/not started.
+ */
+bool pigeon_mqtt_connected(void);
+
+#endif /* CONFIG_PIGEON_CONNECTOR_MQTT */
 
 #ifdef __cplusplus
 }

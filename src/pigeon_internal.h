@@ -74,6 +74,34 @@ void pigeon_transport_unlock(void);
 const struct pigeon_coap_config *pigeon_active_coap_config(void);
 
 /*
+ * pigeon_init()'s device_id, i.e. the pigeon's own id. Only the MQTT
+ * connector reads it (as its CONNECT client id and username); everywhere
+ * else the identity rides the endpoint URL or the PSK identity and this is
+ * a log line. NULL before pigeon_init().
+ */
+const char *pigeon_active_device_id(void);
+
+/*
+ * The MQTT connector's equivalent of the accessor above, populated by
+ * pigeon_init() from config->connector.mqtt. Both fields stay NULL if the
+ * active connector isn't PIGEON_CONNECTOR_MQTT, or on a certificate build,
+ * where the CONNECT password authenticates instead of a PSK.
+ */
+const struct pigeon_mqtt_config *pigeon_active_mqtt_config(void);
+
+#if defined(CONFIG_PIGEON_CONNECTOR_MQTT)
+/*
+ * Implemented by pigeon_mqtt.c. Registers the PSK credentials from
+ * pigeon_init()'s config under CONFIG_PIGEON_MQTT_SEC_TAG, if the app
+ * supplied any (no-op otherwise, or when already registered). Called by the
+ * connector before its first connect; on CONFIG_MODEM_KEY_MGMT builds also
+ * called eagerly from pigeon_init(), because the modem's credential store
+ * only accepts writes while the modem is offline.
+ */
+int pigeon_mqtt_register_psk(void);
+#endif
+
+/*
  * Escapes '"' and '\', plus every RFC 8259 sec 7 control character
  * (0x00-0x1F), so an arbitrary caller string (a shadow telemetry key/val,
  * see pigeon_set_shadow_param()) can't break out of the JSON string it's

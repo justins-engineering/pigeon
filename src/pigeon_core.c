@@ -106,6 +106,15 @@ BUILD_ASSERT(
 #endif
 #endif /* CONFIG_PIGEON_TELEMETRY_BATCH */
 
+/* pigeon_init()'s device_id, kept because the MQTT connector needs it as
+ * the CONNECT client id and username rather than only for a log line (the
+ * HTTPS and CoAP connectors carry the pigeon's identity in the endpoint URL
+ * or the PSK identity instead). The string is the caller's, exactly like
+ * the connector config pointers below. */
+static const char *pigeon_device_id;
+
+const char *pigeon_active_device_id(void) { return pigeon_device_id; }
+
 /* Runtime CoAP config from pigeon_init()'s config->connector.coap, exposed to
  * pigeon_coap.c via pigeon_active_coap_config(). Zero-valued (NULL fields)
  * unless the active connector is PIGEON_CONNECTOR_COAP. */
@@ -113,6 +122,16 @@ static struct pigeon_coap_config pigeon_coap_cfg;
 
 const struct pigeon_coap_config *pigeon_active_coap_config(void) {
   return &pigeon_coap_cfg;
+}
+
+/* The MQTT connector's own half of the same arrangement: PSK credentials
+ * are optional per-device, so they arrive through pigeon_init()'s config
+ * rather than as Kconfig strings this library reads itself. Zero-valued
+ * (NULL fields) unless the active connector is PIGEON_CONNECTOR_MQTT. */
+static struct pigeon_mqtt_config pigeon_mqtt_cfg;
+
+const struct pigeon_mqtt_config *pigeon_active_mqtt_config(void) {
+  return &pigeon_mqtt_cfg;
 }
 
 /* Escapes '"' and '\', plus every RFC 8259 sec 7 control character
@@ -178,7 +197,8 @@ int pigeon_init(const struct pigeon_config* config) {
     return -EINVAL;
   }
 
-#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || defined(CONFIG_PIGEON_CONNECTOR_COAP)
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || defined(CONFIG_PIGEON_CONNECTOR_COAP) || \
+    defined(CONFIG_PIGEON_CONNECTOR_MQTT)
   /* CONFIG_PIGEON_ENDPOINT/_TOKEN live outside "if PIGEON" in Kconfig (see
    * its comment) so pigeon_core.c -- compiled unconditionally regardless of
    * CONFIG_PIGEON -- always has a value to read. That means this guard must
@@ -192,9 +212,12 @@ int pigeon_init(const struct pigeon_config* config) {
   }
 #endif
 
-#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
-  /* The bearer token only rides HTTPS requests; the CoAP connector
-   * authenticates through its PSK handshake instead and never reads it. */
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || \
+    (defined(CONFIG_PIGEON_CONNECTOR_MQTT) && defined(CONFIG_PIGEON_MQTT_AUTH_CERT))
+  /* The bearer token rides HTTPS requests, and is the CONNECT password on a
+   * certificate-authenticated MQTT session. The connectors that authenticate
+   * through a PSK handshake instead -- CoAP, and CONFIG_PIGEON_MQTT_AUTH_PSK
+   * -- never read it. */
   if (!*CONFIG_PIGEON_TOKEN) {
     LOG_ERR("CONFIG_PIGEON_TOKEN must be set");
     return -EINVAL;
@@ -202,6 +225,8 @@ int pigeon_init(const struct pigeon_config* config) {
 #endif
 
   LOG_INF("Initializing Pigeon tracking instance: %s", config->device_id);
+
+  pigeon_device_id = config->device_id;
 
   switch (config->connector.type) {
     case PIGEON_CONNECTOR_HTTPS:
@@ -220,6 +245,22 @@ int pigeon_init(const struct pigeon_config* config) {
        * pigeon_coap.c and coap_dtls_init's main.c in pigeon-examples. */
       {
         int cred_err = pigeon_coap_register_psk();
+
+        if (cred_err) {
+          return cred_err;
+        }
+      }
+#endif
+      break;
+    case PIGEON_CONNECTOR_MQTT:
+      LOG_INF("Transport mapped to MQTT broker session: %s", CONFIG_PIGEON_ENDPOINT);
+      pigeon_mqtt_cfg = config->connector.mqtt;
+#if defined(CONFIG_PIGEON_CONNECTOR_MQTT) && defined(CONFIG_MODEM_KEY_MGMT)
+      /* Same modem-store obligation the CoAP connector has above: those
+       * credentials can only be written while the modem is offline, so the
+       * app must call pigeon_init() BEFORE bringing the link up. */
+      {
+        int cred_err = pigeon_mqtt_register_psk();
 
         if (cred_err) {
           return cred_err;

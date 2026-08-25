@@ -30,6 +30,41 @@ config PIGEON_CONNECTOR_HTTPS
   help
     Standard TLS socket interface for line-powered gateways.
 
+config PIGEON_CONNECTOR_MQTT
+  bool "MQTT over TLS"
+  select MQTT_LIB
+  select MQTT_LIB_TLS
+  select JSON_LIBRARY
+  select NET_CONTEXT_SNDTIMEO
+  help
+    One persistent MQTT session to the pigeonhole broker (PidgeIoT's MQTT
+    terminator, mqtts://<host>:8883), which bridges every publish onto the
+    same device routes the HTTPS connector calls directly, carrying this
+    pigeon's own bearer token -- so the broker is never a trusted proxy in
+    the authorization sense.
+
+    Topics are session-scoped and carry no pigeon id, because the
+    handshake already bound the connection to exactly one pigeon: the
+    device publishes pigeon/telemetry, pigeon/shadow/report and
+    pigeon/logs, and subscribes to the retained pigeon/shadow/target.
+    That retained target REPLACES the shadow poll -- pigeon_shadow_get()
+    serves the value the broker last pushed rather than issuing a request
+    of its own, and a dashboard write arrives unprompted.
+
+    Zephyr's client speaks MQTT 3.1.1 by default and marks 5.0
+    EXPERIMENTAL, so this connector stays on whichever
+    CONFIG_MQTT_VERSION_* the build selects; the broker serves both.
+    CONFIG_MQTT_KEEPALIVE is the session keepalive and wants a deliberate
+    per-target value rather than its 60s default: that suits a mains/WiFi
+    device and is wrong for one that sleeps between reports (the broker
+    honors up to 30 minutes and closes after 1.5x silence).
+
+    Authentication takes one of the two shapes below (PIGEON_MQTT_AUTH),
+    and neither is a transport boundary: any pigeon's token works in
+    certificate mode and any PSK-bearing pigeon's PSK completes the
+    handshake, exactly as a CoAP pigeon's token already works on every
+    device route.
+
 endchoice
 
 if PIGEON_CONNECTOR_COAP
@@ -197,6 +232,187 @@ config PIGEON_HTTPS_NATIVE_TLS
 
 endif # PIGEON_CONNECTOR_HTTPS
 
+if PIGEON_CONNECTOR_MQTT
+
+choice PIGEON_MQTT_AUTH
+  prompt "MQTT session authentication"
+  default PIGEON_MQTT_AUTH_CERT
+
+config PIGEON_MQTT_AUTH_CERT
+  bool "Server certificate and bearer token"
+  help
+    The shape every off-the-shelf MQTT client supports, and the one for
+    mains/WiFi devices: the broker serves a certificate chain the device
+    verifies against a CA the application provisioned under
+    CONFIG_PIGEON_MQTT_SEC_TAG, then CONNECT carries username =
+    pigeon_config.device_id (the pigeon id -- the token has no subject
+    claim of its own, so the broker learns which pigeon this is from the
+    username) and password = CONFIG_PIGEON_TOKEN. Peer verification is
+    required and the hostname is set, so a broker reached by a name its
+    certificate does not carry is refused rather than trusted.
+
+    The platform's broker pins an all-ECDSA chain (a P-256 leaf under an
+    ECDSA intermediate anchored at ISRG Root X2), so a constrained build
+    needs P-256 and P-384 verification only -- no RSA.
+
+config PIGEON_MQTT_AUTH_PSK
+  bool "TLS-PSK"
+  help
+    The constrained path, and the one with no CA store and no clock to
+    keep: identity = the pigeon id, key = the short secret minted
+    alongside the bearer token. This library registers the pair under
+    CONFIG_PIGEON_MQTT_SEC_TAG from pigeon_init()'s config through the
+    same helper the CoAP connector uses, including its modem-store branch
+    on CONFIG_MODEM_KEY_MGMT boards (where credentials must be written
+    while the modem is offline, so pigeon_init() has to run BEFORE the
+    link comes up).
+
+    No bearer token rides the session at all: the broker resolves this
+    pigeon's token server-side from the handshake identity, the same
+    arrangement CoAP already has, which is why CONFIG_PIGEON_TOKEN may be
+    left empty on a PSK build.
+
+endchoice
+
+config PIGEON_MQTT_SEC_TAG
+  int "TLS sec_tag for the Pigeon MQTT connector"
+  default 1
+  help
+    Security tag the session's credentials live under: the PSK identity
+    and secret this library registers itself (PIGEON_MQTT_AUTH_PSK), or
+    the CA certificate the application provisioned (PIGEON_MQTT_AUTH_CERT
+    -- this library provisions nothing there, it only names the tag).
+    Must match whatever the application provisioned under it.
+
+if PIGEON_MQTT_AUTH_PSK
+
+config PIGEON_MQTT_TLS_PSK_SECRET
+  string "MQTT connector TLS-PSK secret"
+  default ""
+  help
+    The short key minted alongside the device's bearer token
+    (capsules::MqttConfig's tls_psk_secret), never the token itself. Same
+    build-time-Kconfig-string convention as CONFIG_PIGEON_ENDPOINT, so a
+    real device's PSK never sits as a literal in application source -- it
+    belongs only in a git-ignored prj.local.conf fragment.
+
+    Deliberately NOT read by this library, the same catch the CoAP pair
+    carries: struct pigeon_mqtt_config's tls_psk_secret (pigeon.h) is what
+    pigeon_init() consults, since the PSK is optional per-device and that
+    struct's NULL-when-absent semantics (Option<String>::None, matching
+    capsules::MqttConfig) have no way to represent "not supplied" against
+    an always-defined Kconfig string. An application wires this in itself
+    and must map the empty default to NULL rather than passing it through
+    verbatim (see the mqtt_init sample's PSK_CONF_OR_NULL): to
+    pigeon_init() a non-NULL empty string is a supplied zero-length
+    credential that fails every handshake, not an absent one.
+
+    There is deliberately no matching identity symbol, unlike the CoAP
+    connector's pair. A PSK identity here is always the pigeon id, which
+    the application already supplies as pigeon_config.device_id, and the
+    broker refuses a session whose identity, username and client id
+    disagree -- a second place to write the same string could only ever be
+    a way to get it wrong.
+
+endif # PIGEON_MQTT_AUTH_PSK
+
+config PIGEON_MQTT_TELEMETRY_QOS1
+  bool "Publish telemetry at QoS 1"
+  default n
+  help
+    The device chooses the quality of service its telemetry gets, and the
+    two are genuinely different paths at the broker rather than two names
+    for one. QoS 0 rides the broker's already-open device WebSocket as one
+    frame: no ack, one synchronous upsert at the pigeon's Durable Object,
+    the cheapest report the platform serves. QoS 1 costs a PUBACK round
+    trip and is answered only once the platform has taken the report, so a
+    flush that returns 0 means the report landed.
+
+    Consequence worth knowing before mixing them, measured live on the
+    platform: the two paths do not share ordering. A QoS 0 report
+    published AFTER a QoS 1 one can be stored first, because the frame
+    path is a synchronous write and the QoS 1 path is a queued one.
+    Ordering holds within a class, not across them.
+
+    Shadow reports and log chunks are always QoS 1 regardless of this
+    option: an ack there is the only evidence the write happened.
+
+config PIGEON_MQTT_RX_BUF_SIZE
+  int "MQTT receive buffer size (bytes)"
+  default 512
+  help
+    Zephyr's client uses this for packet headers only -- a PUBLISH
+    payload is read separately (mqtt_readall_publish_payload), into this
+    connector's own buffer sized from CONFIG_PIGEON_SHADOW_CONFIG_MAX.
+    512 covers the longest topic here (pigeon/shadow/target) with room
+    for MQTT 5 properties.
+
+config PIGEON_MQTT_TX_BUF_SIZE
+  int "MQTT transmit buffer size (bytes)"
+  default 512
+  help
+    Header and topic only, for the same reason: mqtt_publish() sends the
+    payload straight from the caller's buffer as a second iovec rather
+    than copying it here, so a 16KiB log chunk does not need a 16KiB
+    transmit buffer.
+
+config PIGEON_MQTT_THREAD_STACK_SIZE
+  int "MQTT worker thread stack size (bytes)"
+  default 8192
+  help
+    The worker performs the TLS handshake (mbedTLS) itself on boards that
+    do not offload it; 8192 is the same TLS-proven figure
+    CONFIG_PIGEON_WS_THREAD_STACK_SIZE uses.
+
+config PIGEON_MQTT_SHADOW_WAIT_SEC
+  int "How long pigeon_shadow_get() waits for the first retained target"
+  default 15
+  help
+    On this connector the shadow is pushed, not fetched, so the first
+    pigeon_shadow_get() after a connect has to wait for the retained
+    pigeon/shadow/target to arrive (SUBACK then the retained publish,
+    normally well under a second). Later calls return the last value
+    immediately and never wait. A timeout is reported as -EAGAIN: the
+    session is fine, the value has not arrived yet.
+
+config PIGEON_MQTT_PUBLISH_TIMEOUT_SEC
+  int "Deadline for one QoS 1 publish, redeliveries included"
+  default 30
+  help
+    Bounds the whole call, not one attempt: a QoS 1 publish interrupted by
+    a dropped session is republished with the duplicate flag set once the
+    worker reconnects, until this deadline passes. Zephyr's MQTT client
+    never retransmits on its own, so this connector owns redelivery.
+
+config PIGEON_MQTT_MAX_INFLIGHT
+  int "Concurrent QoS 1 publishes this connector tracks"
+  default 2
+  range 1 16
+  help
+    One slot per thread that can be publishing at once. Two covers the
+    normal shape -- the application's own thread flushing telemetry or
+    reporting a shadow, plus the system workqueue draining
+    CONFIG_PIGEON_LOG_UPLOAD -- and an oversubscribed store answers
+    -EBUSY rather than queueing. Stays under the broker's own in-flight
+    ceiling (16 packets, Receive Maximum on MQTT 5).
+
+config PIGEON_MQTT_RECONNECT_MAX_DELAY_SEC
+  int "Reconnect backoff ceiling (seconds)"
+  default 300
+
+config PIGEON_MQTT_AUTH_BACKOFF_SEC
+  int "Backoff after the broker refuses this device's credentials"
+  default 900
+  help
+    A refusal that names the credentials (bad username or password, not
+    authorized) will answer identically to every retry until something
+    changes off-device -- a rotated token, a re-provisioned PSK, a
+    deleted pigeon -- so reconnecting on the ordinary schedule is a
+    pointless load on the broker and on this device's radio. The session
+    still retries, just at this interval rather than seconds.
+
+endif # PIGEON_CONNECTOR_MQTT
+
 config PIGEON_SHADOW_CONFIG_MAX
   int "Max shadow target_config/current_config size (bytes, incl. NUL)"
   default 320
@@ -219,7 +435,7 @@ config PIGEON_SHADOW_CONFIG_MAX
 config PIGEON_LOG_UPLOAD
   bool "Remote log upload (Zephyr dictionary-based logging)"
   default n
-  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_COAP
+  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_COAP || PIGEON_CONNECTOR_MQTT
   select LOG_DICTIONARY_SUPPORT
   help
     Capture this device's log output via Zephyr's dictionary-based
@@ -1010,7 +1226,12 @@ config PIGEON_ENDPOINT
     CONFIG_PIGEON_CONNECTOR_COAP -- a coaps:// (RFC 7252 CoAP-over-
     DTLS/UDP, CONFIG_PIGEON_COAP_TRANSPORT_UDP) or coaps+tcp:// (RFC 8323
     CoAP-over-TLS/TCP, CONFIG_PIGEON_COAP_TRANSPORT_TCP) host; the scheme
-    must match the compiled-in transport (validated at first use).
+    must match the compiled-in transport (validated at first use). For
+    CONFIG_PIGEON_CONNECTOR_MQTT it is the broker itself and carries no
+    path at all (mqtts://mqtt.pidgeiot.com:8883): the pigeon is named by
+    the handshake, not by a URL, which is also why that connector needs
+    pigeon_config.device_id to hold the real pigeon id rather than the
+    log-only placeholder the other samples pass.
     Mirrors dovecote's build_http_endpoint output for HTTPS (e.g.
     https://api.pidgeiot.com/device/pigeons/<device_id>) and
     build_coap_endpoint's output for CoAP -- though dovecote has no
@@ -1026,10 +1247,12 @@ config PIGEON_TOKEN
     building the Authorization header. Returned once at provisioning (or
     re-minted, invalidating the previous token, via a token/refresh call);
     override this per build (e.g. via a board/app Kconfig fragment) rather
-    than committing a real token here. Only the HTTPS connector reads
-    this: the CoAP connector authenticates through its DTLS/TLS PSK
-    handshake alone (the platform holds the bearer token server-side), so
-    CoAP builds may leave it empty.
+    than committing a real token here. Read by the HTTPS connector (the
+    Authorization header) and by CONFIG_PIGEON_MQTT_AUTH_CERT (the CONNECT
+    password). The connectors that authenticate through a PSK handshake
+    instead -- CoAP, and CONFIG_PIGEON_MQTT_AUTH_PSK -- never read it: the
+    platform maps the handshake identity to the pigeon and holds the token
+    server-side, so those builds may leave it empty.
 
 config PIGEON_TELEMETRY_MAX_KEYS
   int "Max distinct telemetry keys pending between flushes"
