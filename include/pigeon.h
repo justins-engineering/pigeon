@@ -477,35 +477,62 @@ static inline void pigeon_fota_attempts_clear(void) {
 
 #endif /* CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET */
 
-#if defined(CONFIG_PIGEON_WS)
+#if defined(CONFIG_PIGEON_WS) || defined(CONFIG_PIGEON_CONNECTOR_MQTT)
 
 /**
- * Events delivered to the callback passed to pigeon_ws_start(). Invoked
- * from the WS worker thread -- do not block in the callback, signal your
- * own thread instead (see pigeon_ws_event_cb_t below).
+ * Events delivered to the callback passed to pigeon_ws_start() or
+ * pigeon_mqtt_start(). Invoked from that channel's worker thread -- do not
+ * block in the callback, signal your own thread instead (see
+ * pigeon_event_cb_t below).
+ *
+ * One enum for both channels because an app that watches a pushed shadow
+ * cares about the same three things either way; only which Kconfig option
+ * supplies the push differs.
  */
-enum pigeon_ws_event {
-  /** Socket just came up (initial connect or a reconnect). The server
-   * sends no state snapshot on accept, so the app should re-sync via
-   * pigeon_shadow_get() now to pick up anything pushed while disconnected. */
-  PIGEON_WS_EVENT_CONNECTED,
-  /** Socket lost. Reconnect with backoff is automatic; this is purely
-   * informational. */
-  PIGEON_WS_EVENT_DISCONNECTED,
-  /** The server pushed a shadow_update frame (a dashboard PUT landed). */
-  PIGEON_WS_EVENT_SHADOW_UPDATE,
+enum pigeon_event {
+  /** The channel just came up (initial connect or a reconnect). Over WS
+   * the server sends no state snapshot on accept, so the app should
+   * re-sync via pigeon_shadow_get() now to pick up anything pushed while
+   * disconnected; over MQTT the retained target arrives on its own and
+   * pigeon_shadow_get() will already be serving it. */
+  PIGEON_EVENT_CONNECTED,
+  /** The channel dropped. Reconnect with backoff is automatic; this is
+   * purely informational. */
+  PIGEON_EVENT_DISCONNECTED,
+  /** The platform pushed a new shadow (a dashboard PUT landed): a
+   * shadow_update frame over WS, a retained pigeon/shadow/target publish
+   * over MQTT. */
+  PIGEON_EVENT_SHADOW_UPDATE,
 };
 
 /*
- * Invoked from the WS worker thread. For PIGEON_WS_EVENT_SHADOW_UPDATE,
- * shadow points at module-static storage valid only for the duration of
- * the callback (same aliasing contract as pigeon_shadow_get(), but a
- * tighter lifetime -- copy out anything you need before returning); NULL
- * for the other two events. Do not block in this callback.
+ * Invoked from the channel's worker thread. For
+ * PIGEON_EVENT_SHADOW_UPDATE, shadow points at module-static storage valid
+ * only for the duration of the callback (same aliasing contract as
+ * pigeon_shadow_get(), but a tighter lifetime -- copy out anything you
+ * need before returning); NULL for the other two events. Do not block in
+ * this callback.
  */
-typedef void (*pigeon_ws_event_cb_t)(
-    enum pigeon_ws_event ev, const struct pigeon_shadow_doc *shadow
+typedef void (*pigeon_event_cb_t)(
+    enum pigeon_event ev, const struct pigeon_shadow_doc *shadow
 );
+
+#endif /* CONFIG_PIGEON_WS || CONFIG_PIGEON_CONNECTOR_MQTT */
+
+#if defined(CONFIG_PIGEON_WS)
+
+/*
+ * The WS-specific names these events shipped under before the MQTT
+ * connector needed the same shape. Kept so existing consumers compile
+ * unchanged rather than duplicating an identical enum per channel; new
+ * code should use the pigeon_event names above.
+ */
+#define pigeon_ws_event              pigeon_event
+#define PIGEON_WS_EVENT_CONNECTED    PIGEON_EVENT_CONNECTED
+#define PIGEON_WS_EVENT_DISCONNECTED PIGEON_EVENT_DISCONNECTED
+#define PIGEON_WS_EVENT_SHADOW_UPDATE PIGEON_EVENT_SHADOW_UPDATE
+
+typedef pigeon_event_cb_t pigeon_ws_event_cb_t;
 
 /**
  * @brief Start the persistent WebSocket push channel.
