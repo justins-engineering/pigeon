@@ -32,6 +32,43 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  * same cap on target_config/current_config, so one file owns the definition. */
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
 
+/*
+ * Which endpoint this module's requests are aimed at.
+ *
+ * Normally the connector's own: CONFIG_PIGEON_ENDPOINT is an
+ * https://host/device/pigeons/<id> base and every operation hangs a leaf off
+ * it. On a CONFIG_PIGEON_CONNECTOR_MQTT build this file is compiled for one
+ * reason only -- the FOTA image fetch, which stays on HTTPS because a
+ * megabyte-scale image has no business on an MQTT session and the platform
+ * already serves it Range-chunked -- and there CONFIG_PIGEON_ENDPOINT names
+ * the broker, which serves no firmware. So that build points this at its own
+ * symbol instead, and the mismatch cannot happen silently: the two are
+ * different strings with different Kconfig help.
+ */
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+#define PIGEON_HTTPS_ENDPOINT        CONFIG_PIGEON_ENDPOINT
+#define PIGEON_HTTPS_ENDPOINT_SYMBOL "CONFIG_PIGEON_ENDPOINT"
+#else
+#define PIGEON_HTTPS_ENDPOINT        CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT
+#define PIGEON_HTTPS_ENDPOINT_SYMBOL "CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT"
+
+/* Both halves of a firmware fetch have to be there for one to work at all,
+ * and neither can be checked at run time without having already committed a
+ * device to a download it cannot finish. A Kconfig string is a literal, so
+ * "was it set" is a compile-time question. */
+BUILD_ASSERT(
+    sizeof(CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT) > 1,
+    "CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT must name this pigeon's https:// device base on an "
+    "MQTT build: CONFIG_PIGEON_ENDPOINT names the broker, which serves no firmware"
+);
+BUILD_ASSERT(
+    sizeof(CONFIG_PIGEON_TOKEN) > 1,
+    "CONFIG_PIGEON_TOKEN must be set for FOTA on an MQTT build: the image fetch is an "
+    "ordinary device-authenticated HTTPS request, even when the session itself "
+    "authenticates with a PSK and carries no token"
+);
+#endif
+
 /* This module's requests run under the shared transport lock
  * (pigeon_transport_lock(), pigeon_core.c) rather than a lock of their own,
  * because it has two jobs here and they need the same mutex.
@@ -73,6 +110,12 @@ static char pigeon_https_host[PIGEON_HTTPS_HOST_MAX];
 static char pigeon_https_path[PIGEON_HTTPS_PATH_MAX];
 static bool pigeon_https_endpoint_parsed;
 
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+/* The connector proper: the three device-facing operations and the shadow
+ * decode behind them. Compiled out when this file is built ONLY to carry the
+ * FOTA download for another connector (see the endpoint note at the top),
+ * where the MQTT connector defines these same hooks and the image fetch is
+ * all that is wanted from here. */
 static uint8_t pigeon_https_recv_buf[PIGEON_HTTPS_RECV_BUF_LEN];
 
 /* Body accumulated across (possibly multiple) http_response_cb_t calls. */
@@ -110,19 +153,20 @@ static const struct json_obj_descr pigeon_shadow_wire_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, current_config, JSON_TOK_STRING_BUF),
     JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, updated_at, JSON_TOK_INT64),
 };
+#endif /* CONFIG_PIGEON_CONNECTOR_HTTPS */
 
-/* Splits CONFIG_PIGEON_ENDPOINT ("https://host[:port]/path...") into
+/* Splits the endpoint above ("https://host[:port]/path...") into
  * pigeon_https_host / pigeon_https_path once. */
 static int pigeon_https_parse_endpoint(void) {
   if (pigeon_https_endpoint_parsed) {
     return 0;
   }
 
-  const char *endpoint = CONFIG_PIGEON_ENDPOINT;
+  const char *endpoint = PIGEON_HTTPS_ENDPOINT;
   const char *scheme_end = strstr(endpoint, "://");
 
   if (!scheme_end) {
-    LOG_ERR("CONFIG_PIGEON_ENDPOINT missing scheme: %s", endpoint);
+    LOG_ERR(PIGEON_HTTPS_ENDPOINT_SYMBOL " missing scheme: %s", endpoint);
     return -EINVAL;
   }
 
@@ -131,7 +175,7 @@ static int pigeon_https_parse_endpoint(void) {
   size_t host_len = path_start ? (size_t)(path_start - host_start) : strlen(host_start);
 
   if (host_len == 0 || host_len >= sizeof(pigeon_https_host)) {
-    LOG_ERR("CONFIG_PIGEON_ENDPOINT host empty or too long");
+    LOG_ERR(PIGEON_HTTPS_ENDPOINT_SYMBOL " host empty or too long");
     return -EINVAL;
   }
 
@@ -140,7 +184,7 @@ static int pigeon_https_parse_endpoint(void) {
 
   if (path_start) {
     if (strlen(path_start) >= sizeof(pigeon_https_path)) {
-      LOG_ERR("CONFIG_PIGEON_ENDPOINT path too long");
+      LOG_ERR(PIGEON_HTTPS_ENDPOINT_SYMBOL " path too long");
       return -EINVAL;
     }
     strcpy(pigeon_https_path, path_start);
@@ -244,6 +288,12 @@ static int pigeon_https_connect(void) {
   return sock;
 }
 
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+/* The connector proper: the three device-facing operations and the shadow
+ * decode behind them. Compiled out when this file is built ONLY to carry the
+ * FOTA download for another connector (see the endpoint note at the top),
+ * where the MQTT connector defines these same hooks and the image fetch is
+ * all that is wanted from here. */
 static int pigeon_https_response_cb(
     struct http_response *rsp, enum http_final_call final_data, void *user_data
 ) {
@@ -364,6 +414,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
    * that shares them with another thread must copy them out first. */
   return err;
 }
+#endif /* CONFIG_PIGEON_CONNECTOR_HTTPS */
 
 /* Retry-After capture.
  *
@@ -439,6 +490,12 @@ static const struct http_parser_settings pigeon_https_header_cb = {
  * device actually waits belongs to the caller, and the only job of a cap
  * here is to keep a hostile or broken field from being accumulated into
  * something absurd on its way out of the parser. */
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+/* The connector proper: the three device-facing operations and the shadow
+ * decode behind them. Compiled out when this file is built ONLY to carry the
+ * FOTA download for another connector (see the endpoint note at the top),
+ * where the MQTT connector defines these same hooks and the image fetch is
+ * all that is wanted from here. */
 #define PIGEON_HTTPS_TELEMETRY_RETRY_AFTER_MAX_SEC 3600
 
 static int pigeon_transport_report_telemetry_locked(
@@ -720,6 +777,7 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 
   return err;
 }
+#endif /* CONFIG_PIGEON_CONNECTOR_HTTPS */
 
 #if defined(CONFIG_PIGEON_FOTA)
 

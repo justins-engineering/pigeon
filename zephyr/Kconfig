@@ -194,17 +194,26 @@ config PIGEON_COAP_SEC_TAG
 
 endif # PIGEON_CONNECTOR_COAP
 
-if PIGEON_CONNECTOR_HTTPS
+# Also live on an MQTT build that carries FOTA: the image fetch is an
+# ordinary HTTPS request served by pigeon_https.c, so it needs the same
+# socket knobs even though the connector itself is somewhere else.
+if PIGEON_CONNECTOR_HTTPS || (PIGEON_CONNECTOR_MQTT && PIGEON_FOTA)
 
 config PIGEON_HTTPS_SEC_TAG
-  int "TLS sec_tag for the Pigeon HTTPS connector"
+  int "TLS sec_tag for the Pigeon HTTPS requests"
   default 1
   help
-    Security tag under which the CA cert for CONFIG_PIGEON_ENDPOINT is
+    Security tag under which the CA cert for the HTTPS endpoint is
     provisioned (via modem_key_mgmt on nRF91 offloaded sockets, or
     tls_credential_add elsewhere). Must match whatever the application
     provisioned its cert(s) under -- this library does not provision
     anything itself, only opens sockets against this tag.
+
+    On an MQTT build with CONFIG_PIGEON_FOTA this is the tag for the
+    firmware host named by CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT, which is a
+    different server from the broker and therefore usually a different tag
+    from CONFIG_PIGEON_MQTT_SEC_TAG -- and necessarily so in PSK mode,
+    where that tag holds a pre-shared key rather than a CA certificate.
 
 config PIGEON_HTTPS_NATIVE_TLS
   bool "Run TLS natively (mbedTLS) over an offloaded transport socket"
@@ -230,7 +239,7 @@ config PIGEON_HTTPS_NATIVE_TLS
     connector socket: shadow, telemetry, log upload, and FOTA downloads.
     CONFIG_PIGEON_WS opens its own sockets and does not honor this yet.
 
-endif # PIGEON_CONNECTOR_HTTPS
+endif # PIGEON_CONNECTOR_HTTPS || (PIGEON_CONNECTOR_MQTT && PIGEON_FOTA)
 
 if PIGEON_CONNECTOR_MQTT
 
@@ -504,9 +513,10 @@ endif # PIGEON_LOG_UPLOAD
 config PIGEON_FOTA
   bool "Firmware-over-the-air (FOTA) updates via MCUboot"
   default n
-  depends on PIGEON_CONNECTOR_HTTPS
+  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_MQTT
   depends on BOOTLOADER_MCUBOOT
   depends on IMG_MANAGER
+  select HTTP_CLIENT
   select PSA_CRYPTO
   select PSA_WANT_ALG_SHA_256
   help
@@ -523,9 +533,16 @@ config PIGEON_FOTA
     shadow "reboot": true command. Off by default -- existing samples
     build unchanged, and this can only be turned on for an application
     already built under sysbuild with MCUboot (CONFIG_BOOTLOADER_MCUBOOT,
-    CONFIG_IMG_MANAGER -- see https_init's sysbuild.conf). HTTPS
-    connector only; the CoAP connector has no download transport for
-    this yet.
+    CONFIG_IMG_MANAGER -- see https_init's sysbuild.conf).
+
+    The download is always HTTPS, on either connector that supports it: a
+    firmware image runs to megabytes, the device route already serves it
+    Range-chunked with device-side resume, and every MQTT-capable device
+    already has TCP and TLS. An MQTT build therefore keeps the HTTPS
+    fetch and names its own https:// base in
+    CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT below, since CONFIG_PIGEON_ENDPOINT
+    there names the broker. The CoAP connector has no download transport
+    for this yet.
 
     Default backend is upstream Zephyr's own flash_img/stream_flash +
     boot_request_upgrade() (see PIGEON_FOTA_NCS below for the vendor
@@ -539,6 +556,24 @@ config PIGEON_FOTA
     the default dev key.
 
 if PIGEON_FOTA
+
+config PIGEON_FOTA_HTTPS_ENDPOINT
+  string "HTTPS device base the firmware image is fetched from"
+  depends on PIGEON_CONNECTOR_MQTT
+  default ""
+  help
+    This pigeon's own https:// device base, e.g.
+    https://api.pidgeiot.com/device/pigeons/<pigeon_id> -- exactly what an
+    HTTPS-connector build puts in CONFIG_PIGEON_ENDPOINT, and needed as its
+    own symbol here because on an MQTT build CONFIG_PIGEON_ENDPOINT names
+    the broker (mqtts://host:8883), which serves no firmware.
+
+    Required whenever CONFIG_PIGEON_FOTA is on with the MQTT connector, and
+    enforced at build time rather than at download time: an empty value is a
+    BUILD_ASSERT in pigeon_https.c, not a device that gets a firmware target
+    and then cannot fetch it. The same build must also carry
+    CONFIG_PIGEON_TOKEN even in PSK mode, because the image fetch is an
+    ordinary device-authenticated HTTPS request whatever the session used.
 
 config PIGEON_FOTA_NCS
   bool "Use the nRF Connect SDK dfu_target backend instead of upstream flash_img"

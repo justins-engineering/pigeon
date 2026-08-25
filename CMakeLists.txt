@@ -25,7 +25,15 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP  src/pigeon_coap.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tcp.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_udp.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_udp_match.c)
-zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_HTTPS src/pigeon_https.c)
+# pigeon_https.c is two things: the HTTPS connector, and the FOTA image
+# fetch. A firmware image stays on HTTPS whatever the connector is (it runs to
+# megabytes and the device route already serves it Range-chunked), so an
+# MQTT+FOTA build compiles this file for its second half only -- the connector
+# hooks inside it are #ifdef'd out there, since the MQTT connector defines
+# those same symbols.
+if(CONFIG_PIGEON_CONNECTOR_HTTPS OR (CONFIG_PIGEON_CONNECTOR_MQTT AND CONFIG_PIGEON_FOTA))
+  zephyr_library_sources(src/pigeon_https.c)
+endif()
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt_policy.c)
 
