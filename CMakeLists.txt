@@ -26,6 +26,11 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tc
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_udp.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_udp_match.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_HTTPS src/pigeon_https.c)
+# TLS-PSK credential registration, shared by every connector that
+# authenticates with a pre-shared key rather than a certificate. One copy,
+# because the modem-store branch inside it is the part least worth
+# duplicating.
+zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP src/pigeon_psk.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_LOG_UPLOAD      src/pigeon_log_backend.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_FOTA            src/pigeon_fota.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_TELEMETRY_BATCH src/pigeon_telemetry_batch.c)

@@ -19,9 +19,6 @@
 #define PIGEON_COAP_HOST_MAX 128
 #define PIGEON_COAP_PATH_MAX 128
 #define PIGEON_COAP_PORT_MAX 6
-/* RFC 4279 sec 5.3 only obliges TLS stacks to support PSKs up to 64 bytes;
- * the platform mints 32-hex-char secrets, well inside that. */
-#define PIGEON_COAP_PSK_MAX 64
 /* Request/response frame ceiling. The request side must fit a full batched
  * telemetry body (built and sized by pigeon_core.c -- see
  * PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h) plus CoAP framing: 384
@@ -101,7 +98,9 @@ int pigeon_coap_parse_endpoint(void);
 /*
  * Registers PSK credentials from pigeon_init()'s config under
  * CONFIG_PIGEON_COAP_SEC_TAG, if the app supplied any (no-op otherwise, or
- * when already registered). Called by each transport before connecting; on
+ * when already registered) -- a thin wrapper over pigeon_psk_register()
+ * (src/pigeon_psk.h), which owns the two stores and the modem's
+ * compare-before-write. Called by each transport before connecting; on
  * CONFIG_MODEM_KEY_MGMT builds also called eagerly from pigeon_init(),
  * because the modem's credential store only accepts writes while the modem
  * is offline.
