@@ -51,6 +51,19 @@ static uint8_t pigeon_fota_flash_buf[CONFIG_PIGEON_FOTA_CHUNK_SIZE] __aligned(4)
  * on pigeon_fota_apply()'s stack frame alongside the TLS/HTTP call chain
  * already active during the download loop. */
 static struct flash_img_context pigeon_fota_flash_ctx;
+
+/* Nothing on this path erases the slot it writes: stream_flash erases only
+ * under CONFIG_STREAM_FLASH_ERASE, which CONFIG_IMG_ERASE_PROGRESSIVELY
+ * selects and this feature's own Kconfig selects in turn. A broken chain
+ * (a select left unsatisfiable by some other configuration, a board
+ * redefining the symbols) is silent until a completed download fails its
+ * sha256, and only on the second image a device ever takes, so refuse to
+ * build instead of shipping that. */
+BUILD_ASSERT(
+    IS_ENABLED(CONFIG_STREAM_FLASH_ERASE) || !IS_ENABLED(CONFIG_FLASH_HAS_EXPLICIT_ERASE),
+    "FOTA would write the MCUboot secondary slot without erasing it: "
+    "CONFIG_IMG_ERASE_PROGRESSIVELY must be enabled"
+);
 #endif
 
 /* First backoff step between retries of the same chunk, doubling per

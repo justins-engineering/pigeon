@@ -519,6 +519,7 @@ config PIGEON_FOTA
   select HTTP_CLIENT
   select PSA_CRYPTO
   select PSA_WANT_ALG_SHA_256
+  select IMG_ERASE_PROGRESSIVELY if !PIGEON_FOTA_NCS
   help
     Chunked HTTP Range-GET download of the firmware image named in the
     shadow's target_config "firmware" key (see capsules/dovecote's
@@ -548,6 +549,17 @@ config PIGEON_FOTA
     boot_request_upgrade() (see PIGEON_FOTA_NCS below for the vendor
     alternative) -- no nRF Connect SDK dependency needed for FOTA on a
     plain vanilla Zephyr build.
+
+    That backend is also why IMG_ERASE_PROGRESSIVELY is selected above.
+    flash_img_buffered_write() erases the slot it writes only under that
+    symbol (which selects STREAM_FLASH_ERASE in turn), and nothing else on
+    the download path erases it; a write to NOR flash can only clear bits,
+    so an image written over the remains of an earlier one is the bitwise
+    AND of the two and fails its own sha256 check at the end of a
+    completed download. A factory-erased slot hides this completely: the
+    first update a board ever takes succeeds, and every one after it is
+    corrupt. The vendor backend needs no equivalent selection here because
+    NCS's DFU_TARGET_STREAM makes it for itself.
 
     MCUboot's own image signature check is the security boundary for
     firmware authenticity here (this library's sha256 check is only an
