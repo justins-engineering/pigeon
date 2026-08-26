@@ -1,7 +1,8 @@
 #include <zephyr/fatal.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
-#include <zephyr/sys/reboot.h>
+
+#include "pigeon.h"
 
 LOG_MODULE_REGISTER(pigeon_fatal, CONFIG_PIGEON_LOG_LEVEL);
 
@@ -23,7 +24,5 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf) 
   LOG_ERR("Fatal error (reason %u) -- rebooting instead of hanging (see "
           "CONFIG_PIGEON_REBOOT_ON_FATAL)", reason);
 
-  sys_reboot(SYS_REBOOT_COLD);
-
-  CODE_UNREACHABLE;
+  pigeon_reboot();
 }

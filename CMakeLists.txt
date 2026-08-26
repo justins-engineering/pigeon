@@ -20,6 +20,11 @@ zephyr_library_sources(src/pigeon_core.c)
 # request indistinguishable from a broken one. One pure parse function.
 zephyr_library_sources(src/pigeon_http_status.c)
 
+# Unconditional: every reboot in the library and in the samples goes through
+# this, whatever else is configured, and a device that cannot reboot is a
+# device in the field with a truck roll attached.
+zephyr_library_sources(src/pigeon_reboot.c)
+
 # Conditionally compile modules based on structural Kconfig choices
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP  src/pigeon_coap.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tcp.c)

@@ -2,6 +2,7 @@
 #define PIDGEIOT_PIGEON_H_
 
 #include <stdbool.h>
+#include <zephyr/toolchain.h>
 #include <zephyr/types.h>
 
 #ifdef __cplusplus
@@ -658,6 +659,22 @@ int pigeon_mqtt_stop(void);
 bool pigeon_mqtt_connected(void);
 
 #endif /* CONFIG_PIGEON_CONNECTOR_MQTT */
+
+/**
+ * @brief Reboot this device.
+ *
+ * Use this everywhere the device restarts itself -- the shadow "reboot"
+ * command, the reboot into a firmware image a FOTA has staged, the fatal
+ * handler, the wedge watchdog -- in place of sys_reboot(). On most targets
+ * it is sys_reboot(SYS_REBOOT_COLD) and nothing more; on the ESP32-C6 that
+ * call leaves the SoC in a state the next boot hangs in, before there is a
+ * console to say so, so this resets the whole system instead.
+ *
+ * Does not return. The caller still owns its own graceful teardown --
+ * powering the modem down, closing a WebSocket, reporting the shadow --
+ * exactly as before.
+ */
+FUNC_NORETURN void pigeon_reboot(void);
 
 #ifdef __cplusplus
 }
