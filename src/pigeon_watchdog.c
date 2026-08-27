@@ -2,6 +2,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/task_wdt/task_wdt.h>
 
 #include "pigeon.h"
@@ -17,6 +18,12 @@ static int pigeon_watchdog_channel = -1;
 static void pigeon_watchdog_expired(int channel_id, void *user_data) {
   ARG_UNUSED(channel_id);
   ARG_UNUSED(user_data);
+
+  /* Same flush-then-say-why as the fatal handler, so the reset that
+   * follows is attributable to a starved channel rather than to a crash
+   * or a power glitch. */
+  LOG_PANIC();
+  LOG_ERR("Wedge watchdog expired; rebooting");
 
   pigeon_reboot();
 }

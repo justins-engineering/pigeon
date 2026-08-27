@@ -1,6 +1,7 @@
 menuconfig PIGEON
   bool "Pigeon Client Platform Library"
   default n
+  select REBOOT
   help
     Enable the client-side modeling and synchronization logic
     for linking physical assets to the PidgeIoT edge core.
