@@ -411,8 +411,11 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * reboot. The caller must gracefully tear down its own connectivity (e.g.
  * lte_disconnect()) and call pigeon_reboot() itself, exactly like the
  * existing shadow "reboot": true convention, and should report its shadow
- * current_config back to the platform first (via pigeon_shadow_report())
- * so the shadow converges before the device goes offline for the swap.
+ * current_config back to the platform first (via pigeon_shadow_report()).
+ * That report should name the version still running, at the platform's
+ * existing current_version: this call has staged an image, not established
+ * that the bootloader will accept it, so convergence belongs to whichever
+ * image comes up and finds its own version matching the target.
  *
  * Not safe to call concurrently with itself. Individual chunks are
  * retried in place rather than ending the transfer, and an HTTP 429 is

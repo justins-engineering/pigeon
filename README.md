@@ -77,9 +77,12 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   the downloaded byte count and a streamed sha256 against `info` before
   scheduling a one-time MCUboot test-swap. Does **not** reboot: on success
   the caller must report its shadow `current_config` back
-  (`pigeon_shadow_report()`) so the shadow converges before tearing down
-  connectivity and calling `pigeon_reboot()` itself — same convention as the
-  existing `"reboot": true` shadow command. On any failure (transport,
+  (`pigeon_shadow_report()`) before tearing down connectivity and calling
+  `pigeon_reboot()` itself, same convention as the existing `"reboot": true`
+  shadow command. That report should still name the version this device is
+  running and be made at the platform's existing `current_version`: a staged
+  image is not one the bootloader has accepted, and the image that boots is
+  the only thing that can honestly claim to be running. On any failure (transport,
   size/hash mismatch, flash write) the secondary slot is left
   un-schedulable and the running image is untouched.
 - `pigeon_fota_confirm_boot()` — call once per boot after establishing the
