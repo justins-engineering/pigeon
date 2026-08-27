@@ -12,11 +12,17 @@ repo.
 
 ## Status
 
-Early scaffold. `pigeon_init()` is implemented; `pigeon_set_shadow_param()`
-is declared in `pigeon.h` but has no body yet. `src/pigeon_coap.c` and
-`src/pigeon_https.c` (the actual transports) don't exist yet — `pigeon.h`'s
-data structures and `pigeon_init()` work today regardless, since
-`CMakeLists.txt` compiles `pigeon_core.c` unconditionally.
+All three connectors are implemented and run against the live platform:
+HTTPS, CoAP (over DTLS/UDP or over TLS/TCP), and MQTT. Around the
+transports the module provides shadow sync, batched telemetry,
+device-authenticated firmware updates with download resume and a
+per-target attempt budget, remote dictionary-log upload, watchdog and
+fatal-error recovery, and an optional remote diagnostic shell.
+
+Everything past `pigeon_init()` and the data structures in `pigeon.h` is
+selected through Kconfig, so a build compiles only what it asks for; a
+device that only needs shadow sync over HTTPS pays for nothing else. See
+[Kconfig](#kconfig) below.
 
 ## Data model
 
@@ -25,19 +31,23 @@ data structures and `pigeon_init()` work today regardless, since
 so device code can build config and shadow payloads that stay compatible
 with `dovecote`:
 
-- `struct pigeon_config` — `device_id` (also the JWT audience) plus a
-  `struct pigeon_connector`.
+- `struct pigeon_config` — `device_id` plus a `struct pigeon_connector`.
+  The HTTPS and CoAP connectors carry the pigeon's identity in the
+  endpoint URL or the PSK identity and use `device_id` for logging only;
+  the MQTT connector does not, so there it is the CONNECT client id and
+  username and has to be the real pigeon id.
 - `struct pigeon_connector` — a `type` (`PIGEON_CONNECTOR_HTTPS` /
-  `PIGEON_CONNECTOR_COAP`) plus `struct pigeon_coap_config`
-  (`tls_psk_identity`/`tls_psk_secret`, only consulted for the CoAP
-  connector). `endpoint`/`token` aren't struct fields — they're build-time
-  `CONFIG_PIGEON_ENDPOINT`/`CONFIG_PIGEON_TOKEN` Kconfig strings, since the
-  connector type is already a build-time choice (see Kconfig below).
-  **Note:** the CoAP connector speaks CoAP-over-TLS/TCP (RFC 8323
-  `coaps+tcp://`), not the usual CoAP-over-DTLS/UDP, since this device stack
-  has no UDP support yet — this is ahead of `dovecote`, which still only
-  serves `coaps://` (UDP/DTLS). See `CLAUDE.md`'s "Known wire-compat gap"
-  note before assuming the two sides can talk to each other.
+  `PIGEON_CONNECTOR_COAP` / `PIGEON_CONNECTOR_MQTT`) plus
+  `struct pigeon_coap_config` and `struct pigeon_mqtt_config`, each only
+  consulted for its own connector. `endpoint`/`token` aren't struct fields
+  — they're build-time `CONFIG_PIGEON_ENDPOINT`/`CONFIG_PIGEON_TOKEN`
+  Kconfig strings, since the connector type is already a build-time choice
+  (see Kconfig below).
+  **Note:** the CoAP connector picks one of two transports at build time,
+  CoAP-over-DTLS/UDP (RFC 7252, `coaps://`) or CoAP-over-TLS/TCP (RFC 8323,
+  `coaps+tcp://`). The platform terminates both on one authority and port,
+  so `CONFIG_PIGEON_ENDPOINT`'s scheme must name the transport the build
+  selected.
 - `struct pigeon_shadow_doc` — `target_version`/`current_version` counters
   plus raw JSON `target_config`/`current_config` text, as returned by
   `GET /pigeon/shadow/get`.
@@ -51,8 +61,10 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
 
 - `struct pigeon_fota_info` — `version`/`size`/`sha256` (64 lowercase hex
   chars), the JSON decode target for target_config's app-defined `firmware`
-  sub-object (mirrors `dovecote`'s shadow-driven FOTA route — see
-  `CLAUDE.md`). Like the rest of `target_config`, this key is opaque to
+  sub-object (mirrors the platform's shadow-driven FOTA route, documented
+  in `docs/api.md` in the
+  [`pidgeiot`](https://github.com/justins-engineering/pidgeiot) repository).
+  Like the rest of `target_config`, this key is opaque to
   `pigeon_shadow_get()`; the app decodes it itself, same as
   `log`/`telemetry_interval`/`reboot`.
 - `pigeon_fota_update_available(info)` — true when `info->version` differs
@@ -75,7 +87,14 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   no-op once already confirmed. Skipping this is what makes MCUboot's
   test-swap fallback work: an image that's staged but never confirmed
   reverts back to the previous slot on the *next* reset, so a bad update
-  self-heals without any server-side intervention.
+  self-heals without any server-side intervention. That fallback is the
+  bootloader's, and it needs swap-with-revert: MCUboot's default, and what
+  the nRF9160 builds get. Espressif's port is overwrite-only
+  (`CONFIG_BOOT_UPGRADE_ONLY=y` in MCUboot's
+  `boot/zephyr/socs/esp32c6_hpcore.conf`), so on the ESP32-C6 the staged
+  image replaces the running one outright and no previous slot survives to
+  return to. Confirming still runs there; what it cannot do is make a bad
+  image recoverable without another update.
 
 ### Surviving a download that goes wrong
 
@@ -105,12 +124,14 @@ reconcile/persistence logic has a native_sim unit suite under
 
 Across the whole campaign, `CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET` (opt-in)
 bounds how many times one firmware target is chased, so an image that
-downloads and verifies cleanly but then boot-loops until MCUboot reverts it
-cannot re-download itself forever. The count is bound to the shadow
+downloads and verifies cleanly but then boot-loops afterwards cannot
+re-download itself forever. The count is bound to the shadow
 `target_version` that named the firmware rather than to the version string
-alone, which is what keeps it recoverable: an operator who writes the
-device's shadow again — same firmware target still in it — reopens the
-budget, while nothing the device does by itself can. Call
+alone, which is what keeps it recoverable: the platform advances
+`target_version` when `target_config` changes, so a shadow write that keeps
+the same firmware target and alters something else reopens the budget. A
+byte-identical re-push does not, and nothing the device does by itself can.
+The dashboard's "Re-push firmware" action supplies that change. Call
 `pigeon_fota_attempt_allowed(info, shadow->target_version)` before
 `pigeon_fota_apply()`, and `pigeon_fota_attempts_clear()` once the offered
 version is confirmed to be the one running; both compile to no-ops when the
@@ -137,6 +158,15 @@ half in the MCUboot child image's own `prj.conf`
 the private half off any machine that doesn't need to sign a release
 image.
 
+That boundary is per target, and on the ESP32-C6 it is currently absent
+rather than weak: Espressif's MCUboot config sets
+`CONFIG_BOOT_SIGNATURE_TYPE_NONE=y`
+(`bootloader/mcuboot/boot/zephyr/socs/esp32c6_hpcore.conf`), so those
+builds verify the image's own sha256 and check no signature at all. The
+nRF9160 builds resolve to ECDSA P256 as described above. Read the built
+`mcuboot/zephyr/.config` rather than assuming, and treat signing as
+unsolved on the C6 until that override is replaced.
+
 ## Build
 
 This is a Zephyr **module**, not a standalone app — `CMakeLists.txt`
@@ -152,15 +182,32 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 ### Kconfig
 
-- `CONFIG_PIGEON` — menuconfig gate for the connector choice below. Leaving
-  it disabled is fine; `pigeon_init()` and the data structures work either
-  way, since only the (not-yet-implemented) transport source files are
-  gated behind it.
-- `CONFIG_PIGEON_CONNECTOR_COAP` / `CONFIG_PIGEON_CONNECTOR_HTTPS` —
-  mutually exclusive choice, only relevant once a transport is implemented.
+`zephyr/Kconfig` is the reference and every symbol carries help text. The
+ones worth knowing before reading it:
+
+- `CONFIG_PIGEON` — menuconfig gate for the connector choice and the
+  optional features under it. Leaving it disabled is fine; `pigeon_init()`
+  and the data structures work either way, since `CMakeLists.txt` compiles
+  `pigeon_core.c` unconditionally and only the transport and feature
+  sources are gated behind it.
+- `CONFIG_PIGEON_CONNECTOR_HTTPS` / `CONFIG_PIGEON_CONNECTOR_COAP` /
+  `CONFIG_PIGEON_CONNECTOR_MQTT` — mutually exclusive choice of transport.
+  CoAP then chooses `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or
+  `_UDP`; MQTT chooses `CONFIG_PIGEON_MQTT_AUTH_CERT` or `_PSK`.
 - `CONFIG_PIGEON_ENDPOINT` / `CONFIG_PIGEON_TOKEN` — the backend URL and
-  device JWT, required whenever `pigeon_init()` is called (checked
-  unconditionally, regardless of `CONFIG_PIGEON`).
+  the pigeon's bearer credential. Deliberately not nested under
+  `CONFIG_PIGEON`, since `pigeon_core.c` reads them either way. The token
+  is an opaque binary credential the platform verifies against this
+  pigeon's own stored public key, not a JWT; the connectors that
+  authenticate through a PSK handshake instead (CoAP, and MQTT in PSK
+  mode) never read it, so those builds may leave it empty.
+- Optional features, all `default n` unless noted:
+  `CONFIG_PIGEON_WS` (a persistent push channel alongside HTTPS),
+  `CONFIG_PIGEON_TELEMETRY_BATCH`, `CONFIG_PIGEON_FOTA` (with
+  `_RESUME`, `default y` wherever a settings backend exists, and
+  `_ATTEMPT_BUDGET`), `CONFIG_PIGEON_LOG_UPLOAD`,
+  `CONFIG_PIGEON_WATCHDOG`, `CONFIG_PIGEON_REBOOT_ON_FATAL`,
+  `CONFIG_PIGEON_SHELL`.
 - `CONFIG_PIGEON_LOG_LEVEL` — 0 (none) to 4 (debug), default 3.
 
 ## License
