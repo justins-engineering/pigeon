@@ -66,7 +66,7 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   scheduling a one-time MCUboot test-swap. Does **not** reboot: on success
   the caller must report its shadow `current_config` back
   (`pigeon_shadow_report()`) so the shadow converges before tearing down
-  connectivity and calling `sys_reboot()` itself — same convention as the
+  connectivity and calling `pigeon_reboot()` itself — same convention as the
   existing `"reboot": true` shadow command. On any failure (transport,
   size/hash mismatch, flash write) the secondary slot is left
   un-schedulable and the running image is untouched.

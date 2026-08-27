@@ -410,7 +410,7 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * On success, schedules a one-time test-swap (equivalent to
  * boot_request_upgrade(BOOT_UPGRADE_TEST)) and returns 0 -- it does NOT
  * reboot. The caller must gracefully tear down its own connectivity (e.g.
- * lte_disconnect()) and call sys_reboot() itself, exactly like the
+ * lte_disconnect()) and call pigeon_reboot() itself, exactly like the
  * existing shadow "reboot": true convention, and should report its shadow
  * current_config back to the platform first (via pigeon_shadow_report())
  * so the shadow converges before the device goes offline for the swap.
@@ -598,7 +598,7 @@ int pigeon_ws_start(pigeon_ws_event_cb_t cb);
  * @brief Gracefully stop the WebSocket push channel.
  *
  * Sends a proper CLOSE frame (rather than just dropping the connection)
- * and joins the worker thread. Call before sys_reboot() (e.g. the shadow
+ * and joins the worker thread. Call before pigeon_reboot() (e.g. the shadow
  * "reboot": true path) so the server sees a clean close.
  *
  * @return 0 on success, negative errno on failure to tear down cleanly
@@ -644,7 +644,7 @@ int pigeon_mqtt_start(pigeon_event_cb_t cb);
  * Sends a real DISCONNECT (rather than dropping the socket, which the
  * broker would treat as ungraceful and answer by publishing this session's
  * will if one were set) and joins the worker thread. Call before
- * sys_reboot() -- the shadow "reboot" command, or a FOTA swap -- so the
+ * pigeon_reboot() -- the shadow "reboot" command, or a FOTA swap -- so the
  * platform sees a clean close.
  *
  * @return 0 on success, negative errno if the teardown was not clean (the
@@ -670,9 +670,8 @@ bool pigeon_mqtt_connected(void);
  * call leaves the SoC in a state the next boot hangs in, before there is a
  * console to say so, so this resets the whole system instead.
  *
- * Does not return. The caller still owns its own graceful teardown --
- * powering the modem down, closing a WebSocket, reporting the shadow --
- * exactly as before.
+ * Does not return. Graceful teardown stays the caller's job: power the
+ * modem down, close a WebSocket, report the shadow, then call this.
  */
 FUNC_NORETURN void pigeon_reboot(void);
 
