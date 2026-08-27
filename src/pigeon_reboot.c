@@ -5,9 +5,7 @@
 
 #if defined(CONFIG_SOC_SERIES_ESP32C6)
 #include <esp_rom_serial_output.h>
-
-/* Provided by the ROM linker script (esp32c6.rom.api.ld). */
-extern void esp_rom_software_reset_system(void);
+#include <esp_rom_sys.h>
 #endif
 
 /* Zephyr's sys_reboot() on this part ends in esp_restart_noos(), which pulses
@@ -25,13 +23,24 @@ extern void esp_rom_software_reset_system(void);
  */
 FUNC_NORETURN void pigeon_reboot(void) {
 #if defined(CONFIG_SOC_SERIES_ESP32C6)
+  /* esp_restart_noos() masks interrupts before it touches anything, so that
+   * nothing scheduled can run against half-torn-down hardware. */
+  (void)irq_lock();
+
   /* Let the last line of the caller's log reach the wire, the same courtesy
    * esp_restart_noos() pays before it resets the UART. */
   esp_rom_output_tx_wait_idle(0);
+
   esp_rom_software_reset_system();
+
+  /* The ROM routine returns: the reset itself lands a few cycles later.
+   * Spin rather than run on into whatever the compiler put next, which is
+   * what every caller of it in the HAL does. */
+  for (;;) {
+  }
 #else
   sys_reboot(SYS_REBOOT_COLD);
-#endif
 
   CODE_UNREACHABLE;
+#endif
 }
