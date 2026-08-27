@@ -460,11 +460,14 @@ int pigeon_fota_confirm_boot(void);
  * struct pigeon_shadow_doc), NOT the firmware version string. It is what
  * makes the budget recoverable: the count is bound to the specific shadow
  * write that asked for this firmware, so an operator who sees a device
- * stuck and pushes its shadow again -- with the same firmware target still
- * in it -- gets a fresh budget without having to invent a new version
- * string for bytes that have not changed. A device cannot manufacture that
- * signal for itself; target_version is assigned by the platform, and
- * rebooting, reconnecting, or re-polling all leave it exactly as it was.
+ * stuck can hand it a fresh budget without inventing a new version string
+ * for bytes that have not changed. The platform advances target_version
+ * when target_config changes, so that write has to alter something besides
+ * the firmware target; sending the identical target_config back leaves the
+ * version where it was. The dashboard's "Re-push firmware" action is that
+ * write. A device cannot manufacture the signal for itself either;
+ * target_version is assigned by the platform, and rebooting, reconnecting,
+ * or re-polling all leave it exactly as it was.
  *
  * A different firmware version resets the budget too, as does having no
  * record at all. Call pigeon_fota_attempts_clear() once the target is
