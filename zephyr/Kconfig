@@ -951,7 +951,6 @@ endif # PIGEON_SHELL
 config PIGEON_REBOOT_ON_FATAL
   bool "Reboot instead of hanging forever on a Zephyr fatal error"
   default n
-  select REBOOT
   help
     The PRIMARY mitigation for the exact failure diagnosed below (see
     CONFIG_PIGEON_WATCHDOG for the full trace): real ESP32-C6 hardware
@@ -969,16 +968,16 @@ config PIGEON_REBOOT_ON_FATAL
     change (see zephyr/include/zephyr/fatal.h's own doc comment). This
     option supplies that override: flush pending log output (LOG_PANIC(),
     per that same doc comment's guidance for an unrecoverable error) and
-    call pigeon_reboot() instead of halting -- converting an
-    eternal hang into a deterministic, immediate self-reboot, entirely in
-    software, from the fault context itself, with no dependency on any
-    watchdog (task or hardware) ever needing to notice and fire. This is a
-    headless, unattended device library -- an operator has no console to
-    recover a hung unit from, so "reboot and try again" is the right
-    default posture for ANY fatal error here, even though it necessarily
-    discards whatever a real debugger session might otherwise inspect at
-    the fault site -- fine for a fleet device, not what you want while
-    actively debugging on a dev board (leave this off for that).
+    call pigeon_reboot() instead of halting -- converting an eternal hang
+    into a deterministic, immediate self-reboot, entirely in software, from
+    the fault context itself, with no dependency on any watchdog (task or
+    hardware) ever needing to notice and fire. This is a headless,
+    unattended device library -- an operator has no console to recover a
+    hung unit from, so "reboot and try again" is the right default posture
+    for ANY fatal error here, even though it necessarily discards whatever
+    a real debugger session might otherwise inspect at the fault site --
+    fine for a fleet device, not what you want while actively debugging on
+    a dev board (leave this off for that).
 
     Complementary to, not a replacement for, CONFIG_PIGEON_WATCHDOG below:
     this hook only runs for an error Zephyr's own fault handler recognizes
