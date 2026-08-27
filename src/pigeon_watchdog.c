@@ -56,6 +56,22 @@ void pigeon_watchdog_start(void) {
 
   int err = task_wdt_init(hw_wdt);
 
+  if (err && hw_wdt) {
+    /* task_wdt rejects a hardware device it cannot use, and -ENOTSUP here
+     * is what an application gets for turning CONFIG_TASK_WDT_HW_FALLBACK
+     * off, which is a reasonable thing to do on a SoC whose watchdog
+     * driver misconverts its timeout. Losing the hardware backstop is a
+     * downgrade; losing the whole wedge watchdog over it is a silent one,
+     * so try again without the device. */
+    LOG_WRN(
+        "task_wdt_init rejected the hardware watchdog: %d -- retrying software-only "
+        "(this cannot recover from a fully-wedged, interrupts-disabled hang)",
+        err
+    );
+    hw_wdt = NULL;
+    err = task_wdt_init(NULL);
+  }
+
   if (err) {
     LOG_ERR("task_wdt_init failed: %d (watchdog NOT armed)", err);
     return;
