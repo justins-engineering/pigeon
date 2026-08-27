@@ -8,11 +8,11 @@
  * Per-request HTTP outcome for callers that can act on more than "it
  * failed".
  *
- * Every non-2xx used to collapse into a bare -EIO on its way out of the
- * connector, which left a rate-limited response indistinguishable from a
- * corrupt body or a dead link. The only available reaction was to treat it
- * as a failure and burn a download attempt -- at the exact moment the
- * server had said, in as many words, how long to wait instead.
+ * Collapsing every non-2xx into a bare -EIO leaves a rate-limited
+ * response indistinguishable from a corrupt body or a dead link, so the
+ * only available reaction is to treat it as a failure and burn a download
+ * attempt, at the exact moment the server has said in as many words how
+ * long to wait instead.
  */
 struct pigeon_http_result {
   /* Status code from the response line, or 0 when the request failed

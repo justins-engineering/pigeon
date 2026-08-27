@@ -53,8 +53,8 @@ static int pigeon_coap_tcp_connect(void) {
   }
 
   /* SNI/hostname verification is an X.509 concept and meaningless for PSK
-   * ciphersuites -- skip it when PSK credentials are configured. Confirmed by
-   * an actual PSK build failure: minimal PSK-only builds may not enable
+   * ciphersuites -- skip it when PSK credentials are configured. Minimal
+   * PSK-only builds may not enable
    * CONFIG_MBEDTLS_X509_CRT_PARSE_C at all, and Zephyr's TLS_HOSTNAME option
    * hard-fails with -ENOPROTOOPT without it (see tls_opt_hostname_set() in
    * subsys/net/lib/sockets/sockets_tls.c). Family-independent, so computed

@@ -62,10 +62,10 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 /* Reconnect backoff: exponential from this base, doubling, capped at
  * CONFIG_PIGEON_WS_RECONNECT_MAX_DELAY_SEC, +-25% jitter. Reset to this base
  * once a connection survives its first app-level pong (see pigeon_ws_thread_fn).
- * No close-code-specific policy (e.g. a slow start on a 4009 "replaced by
- * another connection" close) -- see pigeon_ws_next_backoff_sec()'s docs on
- * why that turned out not to be safely recoverable from the vendored
- * websocket_recv_msg() API and was dropped in favor of uniform backoff. */
+ * Backoff is uniform, with no close-code-specific policy such as a slow
+ * start on a 4009 "replaced by another connection" close: the vendored
+ * websocket_recv_msg() API does not surface a close code the caller can
+ * safely act on. See pigeon_ws_next_backoff_sec()'s docs. */
 #define PIGEON_WS_BACKOFF_BASE_SEC 1
 
 /* Two consecutive missed app-level pongs mark the connection half-open. */
@@ -821,8 +821,8 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
     }
 
     /*
-     * Gotcha (not obvious from json.h's docs, confirmed by reading
-     * zephyr/lib/utils/json.c's decode_value()/obj_parse()): the outer
+     * Not obvious from json.h's docs, and visible instead in
+     * zephyr/lib/utils/json.c's decode_value()/obj_parse(): the outer
      * PIGEON_WS_FIELD_SHADOW bit only means the nested object parsed
      * without a syntax error -- it does NOT mean all 5 of
      * pigeon_ws_shadow_descr's own sub-fields were present, the way a

@@ -374,7 +374,7 @@ static void pigeon_mqtt_handle_publish(
   int kept = pigeon_mqtt_read_payload(client, param->message.payload.len);
 
   if (topic->qos == MQTT_QOS_1_AT_LEAST_ONCE) {
-    /* Acknowledged whatever the payload turned out to be: the broker
+    /* Acknowledge whatever the payload turns out to be: the broker
      * redelivers an unacknowledged publish, and redelivering a shadow this
      * device could not decode would only repeat the failure. */
     struct mqtt_puback_param ack = {.message_id = param->message_id};

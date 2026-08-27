@@ -137,8 +137,7 @@ int pigeon_init(const struct pigeon_config *config);
  * one batched report instead of costing one request each.
  *
  * Not thread-safe: call this (and pigeon_telemetry_flush()) from a single
- * application thread, the same implicit contract the old single-slot
- * pigeon_set_shadow_param() store always had.
+ * application thread.
  *
  * Under CONFIG_PIGEON_TELEMETRY_BATCH the pending store becomes the reading
  * being assembled rather than the report about to be sent: the keys set here
