@@ -760,14 +760,17 @@ config PIGEON_FOTA_ATTEMPT_BUDGET
 
     The count is bound to the shadow target_version that named the
     firmware, not to the version string alone, which is what makes it
-    recoverable. An operator who finds a device stuck and writes its shadow
-    again -- with the same firmware target still in it -- reopens the
-    budget, because target_version advances on every shadow write. Without
-    that, a handful of unlucky timeouts would retire a firmware version on
-    that device permanently, and the only way back would be republishing
-    identical bytes under a new version string. Nothing on the device can
-    fake the signal: target_version comes from the platform, and rebooting
-    or re-polling leaves it unchanged.
+    recoverable. The platform advances target_version when target_config
+    changes, so a shadow write that keeps the same firmware target and
+    changes something else reopens the budget. Writing a byte-identical
+    target_config back does not reopen it: the version moves on a change,
+    not on a write. The dashboard's "Re-push firmware" action supplies that
+    change for the operator, leaving the firmware target itself untouched.
+    Without a reopen path, a handful of unlucky timeouts would retire a
+    firmware version on that device permanently, and the only way back
+    would be republishing identical bytes under a new version string.
+    Nothing on the device can fake the signal: target_version comes from
+    the platform, and rebooting or re-polling leaves it unchanged.
 
     What one attempt means is defined in pigeon_fota_apply(): a download
     starting from byte 0 spends one, while a PIGEON_FOTA_RESUME

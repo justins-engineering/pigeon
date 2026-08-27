@@ -23,13 +23,16 @@
  *
  * So the budget is scoped to an operator's expressed intent rather than to
  * a version string alone. The record binds a count to BOTH the firmware
- * version and the shadow target_version that last asked for it; the shadow's
- * target_version advances on every dashboard write, so an operator who looks
- * at a stuck device and pushes its shadow again -- with the same firmware
- * target still named in it -- has said "try again" in the only vocabulary
- * the device understands, and the count starts over. Nothing device-side can
- * forge that signal: target_version is server-assigned, and a device that
- * merely reboots, reconnects, or re-polls sees the same value it saw before.
+ * version and the shadow target_version that last asked for it. The platform
+ * advances target_version when target_config changes, so an operator who
+ * looks at a stuck device and writes its shadow with the same firmware target
+ * plus one changed key has said "try again" in the only vocabulary the device
+ * understands, and the count starts over. Writing the identical target_config
+ * back is not that signal, since the version only moves on a change; the
+ * dashboard's "Re-push firmware" action supplies the change so an operator
+ * does not have to invent one. Nothing device-side can forge it either:
+ * target_version is server-assigned, and a device that merely reboots,
+ * reconnects, or re-polls sees the same value it saw before.
  *
  * Kept free of CONFIG_PIGEON_FOTA* symbols (the decision function takes its
  * cap as an argument) so tests/fota_attempts can build it on native_sim,
