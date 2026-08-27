@@ -20,6 +20,13 @@ zephyr_library_sources(src/pigeon_core.c)
 # request indistinguishable from a broken one. One pure parse function.
 zephyr_library_sources(src/pigeon_http_status.c)
 
+# Every reboot in the library and in the samples goes through this, whatever
+# else is configured. Gated on the library itself, unlike the two above:
+# REBOOT is selected from PIGEON, so compiling this with the library off
+# would leave a call to sys_reboot() that nothing defines, resolved only by
+# the linker happening to discard the whole function as unreachable.
+zephyr_library_sources_ifdef(CONFIG_PIGEON src/pigeon_reboot.c)
+
 # Conditionally compile modules based on structural Kconfig choices
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_COAP  src/pigeon_coap.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_TCP src/pigeon_coap_tcp.c)

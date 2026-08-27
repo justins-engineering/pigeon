@@ -1,6 +1,7 @@
 menuconfig PIGEON
   bool "Pigeon Client Platform Library"
   default n
+  select REBOOT
   help
     Enable the client-side modeling and synchronization logic
     for linking physical assets to the PidgeIoT edge core.
@@ -529,7 +530,7 @@ config PIGEON_FOTA
     against the shadow-declared size/sha256 before scheduling a
     one-time test-swap. Does not reboot itself -- the caller must
     gracefully tear down its own connectivity (e.g.
-    lte_lc_power_off()/lte_disconnect()) and call sys_reboot() once
+    lte_lc_power_off()/lte_disconnect()) and call pigeon_reboot() once
     pigeon_fota_apply() returns 0, same convention as the existing
     shadow "reboot": true command. Off by default -- existing samples
     build unchanged, and this can only be turned on for an application
@@ -968,7 +969,7 @@ config PIGEON_REBOOT_ON_FATAL
     change (see zephyr/include/zephyr/fatal.h's own doc comment). This
     option supplies that override: flush pending log output (LOG_PANIC(),
     per that same doc comment's guidance for an unrecoverable error) and
-    call sys_reboot(SYS_REBOOT_COLD) instead of halting -- converting an
+    call pigeon_reboot() instead of halting -- converting an
     eternal hang into a deterministic, immediate self-reboot, entirely in
     software, from the fault context itself, with no dependency on any
     watchdog (task or hardware) ever needing to notice and fire. This is a
@@ -1019,9 +1020,9 @@ config PIGEON_WATCHDOG
     whichever transport is active, plus -- when CONFIG_PIGEON_WS is also on
     -- every WS pong received, a higher-frequency heartbeat independent of
     whatever telemetry_interval an operator has configured). If the channel
-    isn't fed within CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC, task_wdt's own
-    default behavior (no callback registered, see task_wdt_trigger() in
-    zephyr/subsys/task_wdt/task_wdt.c) fires sys_reboot(SYS_REBOOT_COLD).
+    isn't fed within CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC, the channel's
+    callback (pigeon_watchdog_expired()) logs the expiry and reboots
+    through pigeon_reboot().
 
     CONFIG_TASK_WDT_HW_FALLBACK (on by default) is ALSO meant to be a
     backstop for the interrupts-disabled case CONFIG_PIGEON_REBOOT_ON_FATAL

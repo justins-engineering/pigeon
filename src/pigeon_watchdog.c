@@ -2,8 +2,10 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/task_wdt/task_wdt.h>
 
+#include "pigeon.h"
 #include "pigeon_internal.h"
 
 LOG_MODULE_REGISTER(pigeon_watchdog, CONFIG_PIGEON_LOG_LEVEL);
@@ -12,6 +14,19 @@ LOG_MODULE_REGISTER(pigeon_watchdog, CONFIG_PIGEON_LOG_LEVEL);
  * pigeon_watchdog_feed() call is then a no-op, same convention as the rest
  * of this library treating an unstarted optional feature as harmless. */
 static int pigeon_watchdog_channel = -1;
+
+static void pigeon_watchdog_expired(int channel_id, void *user_data) {
+  ARG_UNUSED(channel_id);
+  ARG_UNUSED(user_data);
+
+  /* Same flush-then-say-why as the fatal handler, so the reset that
+   * follows is attributable to a starved channel rather than to a crash
+   * or a power glitch. */
+  LOG_PANIC();
+  LOG_ERR("Wedge watchdog expired; rebooting");
+
+  pigeon_reboot();
+}
 
 void pigeon_watchdog_start(void) {
   const struct device *hw_wdt = NULL;
@@ -46,12 +61,13 @@ void pigeon_watchdog_start(void) {
     return;
   }
 
-  /* NULL callback: task_wdt's own default behavior on expiry is
-   * sys_reboot(SYS_REBOOT_COLD) (see task_wdt_trigger() in
-   * zephyr/subsys/task_wdt/task_wdt.c) -- exactly what a headless,
-   * unattended device needs, no custom callback required. */
+  /* task_wdt's own default on expiry is sys_reboot(SYS_REBOOT_COLD) (see
+   * task_wdt_trigger() in zephyr/subsys/task_wdt/task_wdt.c), which is the
+   * right recovery everywhere except the one SoC where that call does not
+   * come back -- so expiry goes through the library's own reboot instead of
+   * a NULL callback. */
   pigeon_watchdog_channel =
-      task_wdt_add(CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC * 1000, NULL, NULL);
+      task_wdt_add(CONFIG_PIGEON_WATCHDOG_TIMEOUT_SEC * 1000, pigeon_watchdog_expired, NULL);
 
   if (pigeon_watchdog_channel < 0) {
     LOG_ERR("task_wdt_add failed: %d (watchdog NOT armed)", pigeon_watchdog_channel);

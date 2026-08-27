@@ -377,7 +377,7 @@ static int pigeon_ws_open_tls_socket(void) {
    * EAGAIN-retry loop honors a caller-supplied deadline. So this
    * setsockopt is the *only* thing standing between a stalled/half-dead
    * TCP path and an indefinite block in pigeon_ws_stop() (called
-   * synchronously from the app thread right before sys_reboot() on the
+   * synchronously from the app thread right before pigeon_reboot() on the
    * shadow "reboot" path) or in pigeon_ws_send_text()'s own sends.
    * CONFIG_NET_CONTEXT_SNDTIMEO must be enabled for this option to have
    * any effect at all (see zephyr/Kconfig: CONFIG_PIGEON_WS selects it) --
@@ -1254,7 +1254,7 @@ int pigeon_ws_stop(void) {
    * echo requests SYS_FOREVER_MS with nothing capping the underlying
    * socket's own send timeout, so a stalled/half-dead TCP path could hang
    * this function (and therefore the shadow "reboot": true path that
-   * calls it right before sys_reboot()) indefinitely.
+   * calls it right before pigeon_reboot()) indefinitely.
    *
    * websocket_disconnect() only sends a CLOSE and unrefs the library's own
    * context, it never touches real_sock, so that always needs its own
