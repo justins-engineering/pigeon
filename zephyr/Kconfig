@@ -13,7 +13,7 @@ choice PIGEON_CONNECTOR_TYPE
   default PIGEON_CONNECTOR_COAP
 
 config PIGEON_CONNECTOR_COAP
-  bool "CoAP over NIDD/Cellular"
+  bool "CoAP over DTLS or TLS"
   select COAP
   select JSON_LIBRARY
   help
