@@ -71,8 +71,8 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_NIDD_OPEN_BACKOFF_MIN_SEC 60
 #define PIGEON_NIDD_OPEN_BACKOFF_MAX_SEC 1920
 #define PIGEON_NIDD_SEND_TIMEOUT_SEC 30
-#define PIGEON_NIDD_PDN_WAIT K_SECONDS(60)
-#define PIGEON_NIDD_STOP_WAIT K_SECONDS(10)
+#define PIGEON_NIDD_PDN_WAIT_SEC 60
+#define PIGEON_NIDD_STOP_WAIT_SEC 10
 /* Below the application's own work, as the other connectors' threads are. */
 #define PIGEON_NIDD_THREAD_PRIORITY 10
 
@@ -476,8 +476,8 @@ static int pigeon_nidd_open_locked(void) {
       err = lte_lc_pdn_activate(cid, NULL, NULL);
     }
     /* AT+CGACT answering is not the PDN being up: the activation event is. */
-    if (!err && k_sem_take(&pigeon_nidd_pdn_sem, PIGEON_NIDD_PDN_WAIT)) {
-      LOG_WRN("NIDD: no activation event for CID %u within 60 s", cid);
+    if (!err && k_sem_take(&pigeon_nidd_pdn_sem, K_SECONDS(PIGEON_NIDD_PDN_WAIT_SEC))) {
+      LOG_WRN("NIDD: no activation event for CID %u within %d s", cid, PIGEON_NIDD_PDN_WAIT_SEC);
     }
   }
 
@@ -1087,10 +1087,10 @@ int pigeon_nidd_stop(void) {
   k_sem_give(&pigeon_nidd_open_sem);
   k_sem_give(&pigeon_nidd_shadow_sem);
 
-  int err = k_thread_join(&pigeon_nidd_thread_data, PIGEON_NIDD_STOP_WAIT);
+  int err = k_thread_join(&pigeon_nidd_thread_data, K_SECONDS(PIGEON_NIDD_STOP_WAIT_SEC));
 
   if (err) {
-    LOG_WRN("NIDD: receive thread did not exit within 10 s: %d", err);
+    LOG_WRN("NIDD: receive thread did not exit within %d s: %d", PIGEON_NIDD_STOP_WAIT_SEC, err);
   }
 
   return err;
