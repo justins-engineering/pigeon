@@ -126,7 +126,8 @@ What the connector asks of the device, and what the library does about it:
   sets `CONFIG_LTE_PSM_REQ=y` and `CONFIG_LTE_PSM_REQ_RPTAU="00010011"`.
   Keep eDRX off (`CONFIG_LTE_EDRX_REQ` unset) or its cycle shorter than the
   granted active time, or a pushed shadow may never be paged. The library
-  logs what the network grants.
+  logs what the network grants, and turns PSM off if the modem refuses the
+  request, rather than keep whatever timers an earlier image left.
 - **NB-IoT only.** The build fails unless the network mode is NB-IoT, or a
   dual mode preferring it.
 

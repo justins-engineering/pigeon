@@ -368,10 +368,14 @@ int pigeon_nidd_configure(void) {
 
   /* The modem keeps both settings across images, so neither is left to what it holds. A
    * refusal is logged rather than returned: a power setting must not keep the device off the
-   * network. */
+   * network. A refused request leaves an earlier image's timers, perhaps a 0 s active time in
+   * which no push can page the device, so PSM is turned off instead. */
   err = lte_lc_psm_req(true);
   if (err) {
-    LOG_ERR("NIDD: PSM request failed: %d (check CONFIG_LTE_PSM_REQ_RPTAU and _RAT)", err);
+    (void)lte_lc_psm_req(false);
+    LOG_ERR(
+        "NIDD: PSM request failed: %d, PSM off (check CONFIG_LTE_PSM_REQ_RPTAU and _RAT)", err
+    );
   } else {
     LOG_INF("NIDD: PSM requested");
   }
