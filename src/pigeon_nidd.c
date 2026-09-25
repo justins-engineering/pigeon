@@ -997,7 +997,8 @@ int pigeon_nidd_start(pigeon_event_cb_t cb) {
   pigeon_nidd.have_shadow = false;
   pigeon_nidd.report_version = -1;
   pigeon_nidd.report_pending = false;
-  pigeon_nidd.hello_due = true;
+  /* A key refused this boot is refused again: only a rebuild fixes it. */
+  pigeon_nidd.hello_due = !pigeon_nidd.unclaimed;
   pigeon_nidd.hello_owed = false;
   pigeon_nidd.next_open_ms = 0;
   pigeon_nidd.open_backoff_sec = PIGEON_NIDD_OPEN_BACKOFF_MIN_SEC;
