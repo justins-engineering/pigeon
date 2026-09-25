@@ -70,6 +70,7 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 /* Opening the socket can activate a PDN, which is a radio access, so retries are minutes apart. */
 #define PIGEON_NIDD_OPEN_BACKOFF_MIN_SEC 60
 #define PIGEON_NIDD_OPEN_BACKOFF_MAX_SEC 1920
+#define PIGEON_NIDD_SEND_TIMEOUT_SEC 30
 #define PIGEON_NIDD_PDN_WAIT K_SECONDS(60)
 #define PIGEON_NIDD_STOP_WAIT K_SECONDS(10)
 /* Below the application's own work, as the other connectors' threads are. */
@@ -411,6 +412,7 @@ static void pigeon_nidd_close_locked(void) {
 
 static int pigeon_nidd_socket_locked(int pdn_id) {
   int one = 1;
+  struct zsock_timeval send_timeout = {.tv_sec = PIGEON_NIDD_SEND_TIMEOUT_SEC};
   int fd = zsock_socket(AF_PACKET, SOCK_RAW, 0);
 
   if (fd < 0) {
@@ -423,6 +425,11 @@ static int pigeon_nidd_socket_locked(int pdn_id) {
 
     (void)zsock_close(fd);
     return err;
+  }
+
+  /* Every send runs under the lock, so one the modem never completes must not hold it forever. */
+  if (zsock_setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout))) {
+    LOG_WRN("NIDD: SO_SNDTIMEO refused: %d (a send may block unbounded)", -errno);
   }
 
   /* Modem firmware older than mfw_nrf91x1 2.0.1 has no such option. Nothing depends on it: a
