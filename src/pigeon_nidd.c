@@ -329,6 +329,10 @@ static int pigeon_nidd_ctx_setup(void) {
   if (!err) {
     atomic_set(&pigeon_nidd_cid, cid);
     err = lte_lc_pdn_ctx_configure(cid, pigeon_nidd_apn, LTE_LC_PDN_FAM_NONIP, NULL);
+    /* Else every retry would take another of the modem's few contexts. */
+    if (err && cid) {
+      (void)lte_lc_pdn_ctx_destroy(cid);
+    }
   }
 
   return err;
