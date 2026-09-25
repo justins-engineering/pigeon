@@ -489,20 +489,40 @@ config PIGEON_NIDD_RAI_IDLE_MS
   int "Quiet time after an owed reply before releasing the radio (ms)"
   default 500
   range 0 5000
+  help
+    Once the reply owed to a HELLO or a shadow report has arrived and nothing
+    else is owed, the library asks the modem to release the connection
+    (RAI_NO_DATA) after this long with no further downlink. Left alone, the
+    network holds a connection about 5 s after its last packet.
 
 config PIGEON_NIDD_REPLY_WAIT_SEC
   int "How long pigeon_shadow_report() waits for its confirmation (seconds)"
   default 30
   range 1 300
+  help
+    After this long pigeon_shadow_report() answers -ETIMEDOUT and leaves the
+    report pending, so a late confirmation still counts. It is also how long
+    a HELLO or a report counts as awaiting its reply: a SHADOW showing the
+    report lost draws a repeat only after it, and a HELLO still unanswered
+    after it is sent again ahead of the next billable frame.
 
 config PIGEON_NIDD_SHADOW_WAIT_SEC
   int "How long pigeon_shadow_get() waits for the reply to a HELLO (seconds)"
   default 60
   range 1 600
+  help
+    With no SHADOW cached, pigeon_shadow_get() waits for the reply to a HELLO
+    for up to this long after that HELLO went out. With nothing cached and no
+    reply owed it answers -EAGAIN at once.
 
 config PIGEON_NIDD_THREAD_STACK_SIZE
-  int "Receive thread stack size"
+  int "Receive thread stack size (bytes)"
   default 2048
+  help
+    The receive thread verifies each platform frame, sends a repeat report
+    or a HELLO when one is owed (opening the socket if it must), and runs
+    the event callback passed to pigeon_nidd_start() on this same stack.
+    Raise it if that callback does more than signal another thread.
 
 endif # PIGEON_CONNECTOR_NIDD
 
@@ -524,6 +544,10 @@ config PIGEON_SHADOW_CONFIG_MAX
     about 1x. CONFIG_PIGEON_WS users raising this should check
     CONFIG_PIGEON_WS_RX_BUF_SIZE still covers a full shadow_update frame
     (two escaped configs plus framing).
+
+    On NIDD the value is at most 1208, so a shadow report fits one
+    1273-byte frame, and a SHADOW whose target_config does not fit is
+    dropped whole with a log line rather than truncated.
 
 config PIGEON_LOG_UPLOAD
   bool "Remote log upload (Zephyr dictionary-based logging)"
