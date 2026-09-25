@@ -43,6 +43,7 @@ if(CONFIG_PIGEON_CONNECTOR_HTTPS OR (CONFIG_PIGEON_CONNECTOR_MQTT AND CONFIG_PIG
 endif()
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt_policy.c)
+zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_NIDD  src/pigeon_nidd.c)
 
 # TLS-PSK credential registration, shared by every connector that
 # authenticates with a pre-shared key rather than a certificate -- the CoAP

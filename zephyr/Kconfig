@@ -74,6 +74,37 @@ config PIGEON_CONNECTOR_MQTT
     handshake, exactly as a CoAP pigeon's token already works on every
     device route.
 
+config PIGEON_CONNECTOR_NIDD
+  bool "Non-IP Data Delivery through the carrier (nRF91, NB-IoT)"
+  depends on NRF_MODEM_LIB
+  # Selected, not depended on: through the modem's network interface, which selects it,
+  # LTE_LINK_CONTROL leads back to this choice, and Kconfig refuses the loop.
+  select LTE_LINK_CONTROL
+  select LTE_LC_PDN_MODULE
+  select LTE_LC_PSM_MODULE
+  select LTE_LC_EDRX_MODULE
+  # The module is what writes AT%RAI at modem init; SO_RAI does nothing without it.
+  select LTE_LC_RAI_MODULE
+  select PSA_CRYPTO
+  select PSA_WANT_ALG_HMAC
+  select PSA_WANT_ALG_SHA_256
+  select PSA_WANT_KEY_TYPE_HMAC
+  # Implied so an app can still turn it off; with the module in and this off, lte_lc
+  # writes AT%RAI=0 at every modem init.
+  imply LTE_RAI_REQ
+  help
+    Frames on a raw socket over a Non-IP PDN, which the carrier hands to ThingSpace and
+    ThingSpace posts to the platform. No TLS and no token: the SIM authenticates the device
+    to the carrier, and CONFIG_PIGEON_NIDD_CLAIM_KEY binds it to its pigeon and verifies
+    every frame the platform sends. docs/api.md in the pidgeiot repository ("NIDD frames")
+    is the authority on the frames.
+
+    The application sets the power parameters: an NB-IoT network mode (checked at build
+    time), CONFIG_LTE_PSM_REQ_RPTAU (Verizon NB-IoT refused NCS's 30-minute default and
+    accepted "00010011", 190 minutes), and eDRX off or shorter than the granted active
+    time. The library requests PSM and writes eDRX at every pigeon_init(), because the
+    modem keeps both across images.
+
 endchoice
 
 if PIGEON_CONNECTOR_COAP
@@ -433,6 +464,45 @@ config PIGEON_MQTT_AUTH_BACKOFF_SEC
     still retries, just at this interval rather than seconds.
 
 endif # PIGEON_CONNECTOR_MQTT
+
+if PIGEON_CONNECTOR_NIDD
+
+config PIGEON_NIDD_CLAIM_KEY
+  string "Claim key, 32 lowercase hex characters"
+  default ""
+  help
+    The pigeon's claim key as the dashboard reveals it, once, at create or token refresh.
+    Sent in HELLO at every boot; verifies the tag on every platform frame. Keep it in a
+    git-ignored conf file. The build fails unless it is exactly 32 characters.
+
+config PIGEON_NIDD_DEDICATED_CID
+  bool "Carry Non-IP on a PDP context of its own"
+  default y
+  help
+    Non-IP on a new context, IP left on the default one, which firmware download needs.
+    Off only on a NIDD-only plan: the default context becomes Non-IP, the device has no IP
+    at all, and CONFIG_PIGEON_FOTA cannot be enabled.
+
+config PIGEON_NIDD_RAI_IDLE_MS
+  int "Quiet time after an owed reply before releasing the radio (ms)"
+  default 500
+  range 0 5000
+
+config PIGEON_NIDD_REPLY_WAIT_SEC
+  int "How long pigeon_shadow_report() waits for its confirmation (seconds)"
+  default 30
+  range 1 300
+
+config PIGEON_NIDD_SHADOW_WAIT_SEC
+  int "How long the first pigeon_shadow_get() waits for the reply to HELLO (seconds)"
+  default 60
+  range 1 600
+
+config PIGEON_NIDD_THREAD_STACK_SIZE
+  int "Receive thread stack size"
+  default 2048
+
+endif # PIGEON_CONNECTOR_NIDD
 
 config PIGEON_SHADOW_CONFIG_MAX
   int "Max shadow target_config/current_config size (bytes, incl. NUL)"
@@ -1135,7 +1205,7 @@ config PIGEON_RESET_CAUSE_TELEMETRY
 config PIGEON_TELEMETRY_BATCH
   bool "Accumulate telemetry readings and deliver them as one batched report"
   default n
-  depends on PIGEON_CONNECTOR_HTTPS
+  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_NIDD
   help
     Turns each pigeon_telemetry_flush() into "close the pending keys into
     one timestamped reading, then deliver the accumulated readings only
@@ -1169,9 +1239,10 @@ config PIGEON_TELEMETRY_BATCH
     behavior exactly -- same flat body, same clear-on-success, same
     per-flush delivery.
 
-    HTTPS connector only for now. The CoAP terminator frames requests
-    differently and its batched shape has not been specified yet, so
-    CoAP builds keep the flat per-flush report.
+    HTTPS and NIDD connectors only for now. On NIDD a batch is how a wake's
+    readings leave in one frame, so one radio access. The CoAP terminator
+    frames requests differently and its batched shape has not been
+    specified yet, so CoAP builds keep the flat per-flush report.
 
 if PIGEON_TELEMETRY_BATCH
 
@@ -1204,6 +1275,7 @@ config PIGEON_TELEMETRY_BATCH_DEPTH
 
 config PIGEON_TELEMETRY_BATCH_BUF_SIZE
   int "Accumulation arena for buffered readings (bytes)"
+  default 1024 if PIGEON_CONNECTOR_NIDD
   default 2048
   range 256 8192
   help
@@ -1227,6 +1299,9 @@ config PIGEON_TELEMETRY_BATCH_BUF_SIZE
     src/pigeon_telemetry_batch.h). The build fails rather than the
     device 413s if this and the depth together could ever emit a body
     over the platform's 16 KiB batch cap.
+
+    On NIDD the default is 1024, sized so a batch body fits one 1273-byte
+    frame at the default depth.
 
 config PIGEON_TELEMETRY_BATCH_MAX_AGE_SEC
   int "Deliver a partial batch once its oldest reading is this old (seconds)"
@@ -1293,6 +1368,8 @@ config PIGEON_ENDPOINT
     the handshake, not by a URL, which is also why that connector needs
     pigeon_config.device_id to hold the real pigeon id rather than the
     log-only placeholder the other samples pass.
+    For CONFIG_PIGEON_CONNECTOR_NIDD it is nidd://<APN>, the APN of the
+    Non-IP PDN (nidd://VZWSCEF on Verizon), checked at pigeon_init().
     Mirrors dovecote's build_http_endpoint output for HTTPS (e.g.
     https://api.pidgeiot.com/device/pigeons/<device_id>) and
     build_coap_endpoint's output for CoAP -- though dovecote has no
@@ -1317,6 +1394,7 @@ config PIGEON_TOKEN
 
 config PIGEON_TELEMETRY_MAX_KEYS
   int "Max distinct telemetry keys pending between flushes"
+  default 7 if PIGEON_CONNECTOR_NIDD
   default 8
   range 1 64
   help
@@ -1332,7 +1410,8 @@ config PIGEON_TELEMETRY_MAX_KEYS
     scales linearly: ~160 bytes/slot for the store plus ~165 bytes/slot
     for the shared flush body buffer (see PIGEON_TELEMETRY_BODY_MAX in
     pigeon_internal.h) -- and the CoAP connector's frame buffers scale
-    with it too (see PIGEON_COAP_MSG_MAX in pigeon_coap.c).
+    with it too (see PIGEON_COAP_MSG_MAX in pigeon_coap.c). NIDD defaults
+    to 7: eight worst-case keys make a 1323-byte body, over one NIDD frame.
 
 config PIGEON_LOG_LEVEL
   int "Pigeon Library Log Level"

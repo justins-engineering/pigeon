@@ -198,7 +198,7 @@ int pigeon_init(const struct pigeon_config* config) {
   }
 
 #if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || defined(CONFIG_PIGEON_CONNECTOR_COAP) || \
-    defined(CONFIG_PIGEON_CONNECTOR_MQTT)
+    defined(CONFIG_PIGEON_CONNECTOR_MQTT) || defined(CONFIG_PIGEON_CONNECTOR_NIDD)
   /* CONFIG_PIGEON_ENDPOINT/_TOKEN live outside "if PIGEON" in Kconfig (see
    * its comment) so pigeon_core.c -- compiled unconditionally regardless of
    * CONFIG_PIGEON -- always has a value to read. That means this guard must
@@ -264,6 +264,18 @@ int pigeon_init(const struct pigeon_config* config) {
 
         if (cred_err) {
           return cred_err;
+        }
+      }
+#endif
+      break;
+    case PIGEON_CONNECTOR_NIDD:
+      LOG_INF("Transport mapped to NIDD through the carrier: %s", CONFIG_PIGEON_ENDPOINT);
+#if defined(CONFIG_PIGEON_CONNECTOR_NIDD)
+      {
+        int nidd_err = pigeon_nidd_configure();
+
+        if (nidd_err) {
+          return nidd_err;
         }
       }
 #endif

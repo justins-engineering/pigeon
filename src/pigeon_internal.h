@@ -101,6 +101,12 @@ const struct pigeon_mqtt_config *pigeon_active_mqtt_config(void);
 int pigeon_mqtt_register_psk(void);
 #endif
 
+#if defined(CONFIG_PIGEON_CONNECTOR_NIDD)
+/* Implemented by pigeon_nidd.c; called by pigeon_init() because the PDP context can only be
+ * configured before the attach. */
+int pigeon_nidd_configure(void);
+#endif
+
 /*
  * Escapes '"' and '\', plus every RFC 8259 sec 7 control character
  * (0x00-0x1F), so an arbitrary caller string (a shadow telemetry key/val,

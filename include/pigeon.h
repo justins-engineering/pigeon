@@ -17,7 +17,8 @@ extern "C" {
 enum pigeon_connector_type {
   PIGEON_CONNECTOR_HTTPS,
   PIGEON_CONNECTOR_COAP,
-  PIGEON_CONNECTOR_MQTT
+  PIGEON_CONNECTOR_MQTT,
+  PIGEON_CONNECTOR_NIDD
 };
 
 /*
@@ -75,7 +76,9 @@ struct pigeon_mqtt_config {
 
 /*
  * Mirrors capsules::Connector (tagged union: Https(HttpsConfig) |
- * Coap(CoapConfig) | Mqtt(MqttConfig)).
+ * Coap(CoapConfig) | Mqtt(MqttConfig) | Nidd(NiddConfig)). NIDD has no member
+ * here: its claim key is CONFIG_PIGEON_NIDD_CLAIM_KEY and its APN is in
+ * CONFIG_PIGEON_ENDPOINT.
  */
 struct pigeon_connector {
   enum pigeon_connector_type type;
@@ -87,7 +90,8 @@ struct pigeon_config {
   /*
    * Durable Object / pigeon ID. The HTTPS and CoAP connectors carry the
    * pigeon's identity in the endpoint URL or the PSK identity and use this
-   * only for logging, so those samples pass a readable placeholder. The
+   * only for logging, so those samples pass a readable placeholder. So does
+   * NIDD, where the modem's IMEI names the pigeon. The
    * MQTT connector does NOT: its endpoint names the broker rather than the
    * pigeon, so this string is the CONNECT client id and username, the
    * broker refuses anything that is not 64 lowercase hex, and it must
@@ -197,6 +201,10 @@ int pigeon_telemetry_set(const char *key, const char *val);
  * is what an existing "if (err) LOG_ERR" caller should keep quiet about. Use
  * pigeon_telemetry_batch_pending() to see how much is waiting, and
  * pigeon_telemetry_flush_now() to deliver regardless.
+ *
+ * On CONFIG_PIGEON_CONNECTOR_NIDD, 0 means the modem took the frame. The
+ * transport answers -EAGAIN while the platform holds the account paused and
+ * -EACCES once the claim key has been refused, both without a radio access.
  *
  * @return 0 on success (all pending keys sent and cleared; under
  * CONFIG_PIGEON_TELEMETRY_BATCH, also when the reading was buffered and no
@@ -330,6 +338,16 @@ int pigeon_shadow_flush(void);
  * CONFIG_PIGEON_MQTT_SHADOW_WAIT_SEC for that retained value and returns
  * -EAGAIN if it has not landed yet; -ENOTCONN means the session is down.
  *
+ * On CONFIG_PIGEON_CONNECTOR_NIDD nothing is fetched either: the call serves
+ * the newest SHADOW frame the platform has sent. The first call after
+ * pigeon_nidd_start() waits up to CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC for the
+ * reply to HELLO and returns -EAGAIN if none arrived; -ENOTCONN means the
+ * connector was not started. A SHADOW frame carries no current_config and no
+ * timestamp, so current_version is the newest version the platform has named,
+ * current_config is the config this device last reported this boot ("" before
+ * its first report, and ahead of current_version while that report awaits
+ * confirmation), and updated_at is 0.
+ *
  * target_config/current_config point into a static buffer owned by this
  * function: valid only until the next call, and only for the connector type
  * actually compiled in (pigeon_https.c or pigeon_coap.c).
@@ -352,6 +370,17 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
  * pigeon_shadow_doc's docs on why the platform doesn't just re-derive this
  * from target_version itself). current_config is a caller-owned raw JSON
  * object string, not parsed or validated by this library.
+ *
+ * On CONFIG_PIGEON_CONNECTOR_NIDD this sends one SHADOW_REPORT frame and waits
+ * up to CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC for the platform to confirm it.
+ * -ETIMEDOUT means no confirmation came in time: a later one still counts, and
+ * reporting again is harmless. -EAGAIN means the account is paused and -EACCES
+ * that the claim key was refused, both without a radio access. -EDEADLK means
+ * the call came from the event callback, whose thread is the one that receives
+ * the confirmation. -EMSGSIZE means current_config is
+ * CONFIG_PIGEON_SHADOW_CONFIG_MAX bytes or more, -ENOTCONN that no socket is
+ * open (not started, or the Non-IP PDN is between retries), -EBUSY that the
+ * connector stayed busy; a failed send returns its own negative errno.
  *
  * @param current_version The target_version that was just applied.
  * @param current_config Raw JSON object string describing the applied config.
@@ -525,15 +554,16 @@ static inline void pigeon_fota_attempts_clear(void) {
 
 #endif /* CONFIG_PIGEON_FOTA_ATTEMPT_BUDGET */
 
-#if defined(CONFIG_PIGEON_WS) || defined(CONFIG_PIGEON_CONNECTOR_MQTT)
+#if defined(CONFIG_PIGEON_WS) || defined(CONFIG_PIGEON_CONNECTOR_MQTT) || \
+    defined(CONFIG_PIGEON_CONNECTOR_NIDD)
 
 /**
- * Events delivered to the callback passed to pigeon_ws_start() or
- * pigeon_mqtt_start(). Invoked from that channel's worker thread -- do not
- * block in the callback, signal your own thread instead (see
- * pigeon_event_cb_t below).
+ * Events delivered to the callback passed to pigeon_ws_start(),
+ * pigeon_mqtt_start() or pigeon_nidd_start(). Invoked from that channel's
+ * worker thread -- do not block in the callback, signal your own thread
+ * instead (see pigeon_event_cb_t below).
  *
- * One enum for both channels because an app that watches a pushed shadow
+ * One enum for every channel because an app that watches a pushed shadow
  * cares about the same three things either way; only which Kconfig option
  * supplies the push differs.
  */
@@ -542,14 +572,15 @@ enum pigeon_event {
    * the server sends no state snapshot on accept, so the app should
    * re-sync via pigeon_shadow_get() now to pick up anything pushed while
    * disconnected; over MQTT the retained target arrives on its own and
-   * pigeon_shadow_get() will already be serving it. */
+   * pigeon_shadow_get() will already be serving it. Over NIDD it means the
+   * Non-IP socket was opened, at start or after a PDN loss. */
   PIGEON_EVENT_CONNECTED,
   /** The channel dropped. Reconnect with backoff is automatic; this is
    * purely informational. */
   PIGEON_EVENT_DISCONNECTED,
   /** The platform pushed a new shadow (a dashboard PUT landed): a
    * shadow_update frame over WS, a retained pigeon/shadow/target publish
-   * over MQTT. */
+   * over MQTT, a SHADOW frame newer than the cached one over NIDD. */
   PIGEON_EVENT_SHADOW_UPDATE,
 };
 
@@ -559,13 +590,14 @@ enum pigeon_event {
  * only for the duration of the callback (same aliasing contract as
  * pigeon_shadow_get(), but a tighter lifetime -- copy out anything you
  * need before returning); NULL for the other two events. Do not block in
- * this callback.
+ * this callback. On NIDD it runs on the thread that receives the platform's
+ * replies, so pigeon_shadow_report() called from it returns -EDEADLK.
  */
 typedef void (*pigeon_event_cb_t)(
     enum pigeon_event ev, const struct pigeon_shadow_doc *shadow
 );
 
-#endif /* CONFIG_PIGEON_WS || CONFIG_PIGEON_CONNECTOR_MQTT */
+#endif /* CONFIG_PIGEON_WS || CONFIG_PIGEON_CONNECTOR_MQTT || CONFIG_PIGEON_CONNECTOR_NIDD */
 
 #if defined(CONFIG_PIGEON_WS)
 
@@ -664,6 +696,40 @@ int pigeon_mqtt_stop(void);
 bool pigeon_mqtt_connected(void);
 
 #endif /* CONFIG_PIGEON_CONNECTOR_MQTT */
+
+#if defined(CONFIG_PIGEON_CONNECTOR_NIDD)
+
+/**
+ * @brief Open the Non-IP socket and claim this pigeon.
+ *
+ * Call once per boot, after pigeon_init() and once the modem has registered on NB-IoT.
+ * Activates the Non-IP PDN, starts the thread that receives platform frames, and sends
+ * HELLO. After that nothing is sent unless the application flushes telemetry or reports a
+ * shadow: the library has no cadence of its own.
+ *
+ * The carrier allows at most four radio accesses an hour, uplink and downlink together,
+ * and keeping to that is the application's job: wake no more often than every 15 minutes
+ * and send each wake's readings as one batch (CONFIG_PIGEON_TELEMETRY_BATCH). A reply rides
+ * the connection its uplink opened and costs no access of its own. A build that enables
+ * CONFIG_PIGEON_WATCHDOG needs a timeout above its wake interval plus any PAUSED hold,
+ * since only a delivered flush feeds it.
+ *
+ * @param cb Event callback, invoked on the receive thread. May be NULL.
+ * @return 0 once the thread runs (it may first wait up to a minute for the Non-IP PDN, and
+ *         one that does not come up is retried at the next send); -EALREADY if already started;
+ *         -ENODEV if pigeon_init() did not configure NIDD.
+ */
+int pigeon_nidd_start(pigeon_event_cb_t cb);
+
+/**
+ * @brief Stop receiving and close the Non-IP socket.
+ *
+ * Call before powering the modem off, for example before pigeon_reboot().
+ * @return 0, or a negative errno if the receive thread did not exit in time.
+ */
+int pigeon_nidd_stop(void);
+
+#endif /* CONFIG_PIGEON_CONNECTOR_NIDD */
 
 /**
  * @brief Reboot this device.
