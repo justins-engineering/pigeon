@@ -688,8 +688,10 @@ static void pigeon_nidd_on_shadow(
   }
 
   /* The platform holds less than this device reported, so that report was lost; unless it was
-   * only just sent, since telemetry sent before it can draw this SHADOW first. */
+   * only just sent, since telemetry sent before it can draw this SHADOW first, or this SHADOW
+   * brought a newer target, whose report the application sends instead. */
   if (pigeon_nidd.report_version >= 0 && (int32_t)cv < pigeon_nidd.report_version &&
+      !(out->updated && pigeon_nidd.target_version > pigeon_nidd.report_version) &&
       !(pigeon_nidd.report_pending &&
         now - pigeon_nidd.report_sent_ms < PIGEON_NIDD_REPLY_WAIT_MS)) {
     LOG_INF(
