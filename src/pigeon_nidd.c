@@ -145,6 +145,7 @@ static psa_key_id_t pigeon_nidd_key;
 /* Points into CONFIG_PIGEON_ENDPOINT, past the scheme. */
 static const char *pigeon_nidd_apn;
 static bool pigeon_nidd_keepopen_logged;
+static bool pigeon_nidd_rai_logged;
 
 /* Written by the lte_lc handler, which never takes pigeon_nidd_lock: an lte_lc PDN call made
  * under the lock completes on notifications delivered from the handler's own context. */
@@ -526,8 +527,12 @@ static int pigeon_nidd_transmit_locked(size_t len, const char *what) {
   /* A release requested after this send would cut the connection before its reply. */
   (void)k_work_cancel_delayable(&pigeon_nidd_release_work);
 
-  if (zsock_setsockopt(pigeon_nidd.fd, SOL_SOCKET, SO_RAI, &rai, sizeof(rai))) {
-    LOG_DBG("NIDD: SO_RAI RAI_ONGOING refused: %d", -errno);
+  /* Logged once and visibly: whether the modem honours it decides how long each connection
+   * stays up. */
+  if (zsock_setsockopt(pigeon_nidd.fd, SOL_SOCKET, SO_RAI, &rai, sizeof(rai)) &&
+      !pigeon_nidd_rai_logged) {
+    pigeon_nidd_rai_logged = true;
+    LOG_INF("NIDD: this modem refuses SO_RAI RAI_ONGOING: %d", -errno);
   }
 
   if (zsock_send(pigeon_nidd.fd, pigeon_nidd_tx, len, 0) < 0) {
