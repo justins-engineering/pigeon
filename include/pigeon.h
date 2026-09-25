@@ -349,9 +349,9 @@ int pigeon_shadow_flush(void);
  * of current_version while that report awaits confirmation), and updated_at
  * is 0.
  *
- * target_config/current_config point into a static buffer owned by this
- * function: valid only until the next call, and only for the connector type
- * actually compiled in (pigeon_https.c or pigeon_coap.c).
+ * target_config/current_config point into a static buffer owned by the
+ * connector compiled in: valid only until the next call. On NIDD,
+ * current_config is valid only until the next pigeon_shadow_report().
  *
  * @param out Filled with the fetched shadow on success.
  * @return 0 on success, negative error code on transport/parse failure.
@@ -577,7 +577,8 @@ enum pigeon_event {
    * Non-IP socket was opened, at start or after a PDN loss. */
   PIGEON_EVENT_CONNECTED,
   /** The channel dropped. Reconnect with backoff is automatic; this is
-   * purely informational. */
+   * purely informational. Over NIDD the socket is re-opened by the next
+   * send, so no push arrives until the application sends again. */
   PIGEON_EVENT_DISCONNECTED,
   /** The platform pushed a new shadow (a dashboard PUT landed): a
    * shadow_update frame over WS, a retained pigeon/shadow/target publish
@@ -592,7 +593,8 @@ enum pigeon_event {
  * pigeon_shadow_get(), but a tighter lifetime -- copy out anything you
  * need before returning); NULL for the other two events. Do not block in
  * this callback. On NIDD it runs on the thread that receives the platform's
- * replies, so pigeon_shadow_report() called from it returns -EDEADLK.
+ * replies, so pigeon_shadow_report() called from it returns -EDEADLK, and it
+ * shares that thread's CONFIG_PIGEON_NIDD_THREAD_STACK_SIZE stack.
  */
 typedef void (*pigeon_event_cb_t)(
     enum pigeon_event ev, const struct pigeon_shadow_doc *shadow
@@ -705,8 +707,10 @@ bool pigeon_mqtt_connected(void);
  *
  * Call once per boot, after pigeon_init() and once the modem has registered on NB-IoT.
  * Activates the Non-IP PDN, starts the thread that receives platform frames, and sends
- * HELLO. After that nothing is sent unless the application flushes telemetry or reports a
- * shadow: the library has no cadence of its own.
+ * HELLO. After that the library has no cadence of its own: it sends what the application
+ * flushes or reports, a HELLO ahead of that when the last one drew no reply, and, on the
+ * connection a platform frame arrived on, a repeat of a report the platform lost or a HELLO
+ * the platform asked for.
  *
  * The carrier allows at most four radio accesses an hour, uplink and downlink together,
  * and keeping to that is the application's job: wake no more often than every 15 minutes
@@ -714,6 +718,10 @@ bool pigeon_mqtt_connected(void);
  * the connection its uplink opened and costs no access of its own. A build that enables
  * CONFIG_PIGEON_WATCHDOG needs a timeout above its wake interval plus any PAUSED hold,
  * since only a delivered flush feeds it.
+ *
+ * Do not flush telemetry or report a shadow from the system workqueue: a send that has to
+ * activate the PDN waits for an event the system workqueue delivers, so it would stall a
+ * minute and block every other work item meanwhile.
  *
  * @param cb Event callback, invoked on the receive thread. May be NULL.
  * @return 0 once the thread runs (it may first wait up to a minute for the Non-IP PDN, and

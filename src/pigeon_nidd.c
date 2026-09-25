@@ -10,7 +10,8 @@
  * channel with a thread of its own, because replies and pushes arrive when the
  * network delivers them. docs/api.md in the pidgeiot repository ("NIDD frames",
  * "NIDD downlink and replies") is the authority on every byte. The library has
- * no cadence: it sends what the application asks for, plus HELLO.
+ * no cadence: it sends what the application asks for, plus HELLO when a claim
+ * is due and a repeat of a report the platform lost.
  */
 #include <errno.h>
 #include <modem/lte_lc.h>
@@ -114,7 +115,7 @@ K_THREAD_STACK_DEFINE(pigeon_nidd_stack, CONFIG_PIGEON_NIDD_THREAD_STACK_SIZE);
 static struct k_thread pigeon_nidd_thread_data;
 
 /*
- * Guards pigeon_nidd, the two cached configs and pigeon_nidd_tx. Held across one send or one
+ * Guards pigeon_nidd, the three config buffers and pigeon_nidd_tx. Held across one send or one
  * open, whose only wait is for pigeon_nidd_pdn_sem, and never across the event callback.
  */
 K_MUTEX_DEFINE(pigeon_nidd_lock);

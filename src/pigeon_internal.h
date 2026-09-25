@@ -169,8 +169,9 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len);
 
 #if defined(CONFIG_PIGEON_FOTA)
 /*
- * Implemented only by pigeon_https.c (CONFIG_PIGEON_FOTA depends on
- * CONFIG_PIGEON_CONNECTOR_HTTPS -- no CoAP download transport yet). Issues
+ * Implemented only by pigeon_https.c: CONFIG_PIGEON_FOTA depends on the
+ * HTTPS, MQTT or NIDD (dedicated CID) connector, and the image comes over
+ * HTTPS whichever it is (no CoAP download transport yet). Issues
  * a device-authed HTTP Range GET against <endpoint>/firmware for
  * [offset, offset+buf_len) and copies whatever body bytes come back into
  * buf. *out_len is set to the number of bytes actually written to buf
