@@ -556,6 +556,12 @@ static int pigeon_nidd_gate_locked(void) {
   if (k_uptime_get() < pigeon_nidd.paused_until_ms) {
     return -EAGAIN;
   }
+  /* A HELLO with no reply counts as failed: it may never have claimed the pigeon, and a
+   * converged pigeon's target comes only in that reply. */
+  if (pigeon_nidd.hello_owed &&
+      k_uptime_get() - pigeon_nidd.hello_sent_ms >= PIGEON_NIDD_REPLY_WAIT_MS) {
+    pigeon_nidd.hello_due = true;
+  }
 
   return pigeon_nidd.hello_due ? pigeon_nidd_hello_locked() : 0;
 }

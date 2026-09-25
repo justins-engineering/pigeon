@@ -108,10 +108,12 @@ What the connector asks of the device, and what the library does about it:
   `CONFIG_PIGEON_SHADOW_CONFIG_MAX` at 1208. One reading of 7 keys at the
   worst-case sizes (1157 bytes) does not fit that arena and stays pending,
   which only pathological values reach.
-- **`HELLO` at every start**, and again after a `STATUS UNCLAIMED 0`, at
-  most hourly. `UNCLAIMED 1`, a refused key, makes billable sends answer
-  `-EACCES` until the next boot; `PAUSED` makes them answer `-EAGAIN` for
-  the time it names. Both are answered without a radio access.
+- **`HELLO` at every start**, again ahead of the next billable frame when
+  one drew no reply within `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC`, and after a
+  `STATUS UNCLAIMED 0`, at most hourly. `UNCLAIMED 1`, a refused key, makes
+  billable sends answer `-EACCES` until the next boot; `PAUSED` makes them
+  answer `-EAGAIN` for the time it names. Both are answered without a radio
+  access.
 - **The connection is held for the reply.** Every send sets `RAI_ONGOING`;
   once the reply owed to a `HELLO` or a shadow report has arrived, the
   library requests release (`RAI_NO_DATA`) after
