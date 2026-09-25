@@ -68,10 +68,12 @@ hands to ThingSpace and ThingSpace posts to the platform. There is no TLS
 and no bearer token. The SIM authenticates the device to the carrier, the
 modem's IMEI names the pigeon, and the claim key in
 `CONFIG_PIGEON_NIDD_CLAIM_KEY` binds the device to its pigeon and verifies
-every frame the platform sends. Like the MQTT connector it is a transport
-and a receive channel at once: call `pigeon_init()` before the attach,
-`pigeon_nidd_start()` after it, and `pigeon_nidd_stop()` before the modem
-is powered off.
+every frame the platform sends. NIDD is not self-serve: the platform takes
+NIDD traffic only from lines on its own ThingSpace account, and only
+organizations enabled for NIDD can create a `Nidd` pigeon. Like the MQTT
+connector it is a transport and a receive channel at once: call
+`pigeon_init()` before the attach, `pigeon_nidd_start()` after it, and
+`pigeon_nidd_stop()` before the modem is powered off.
 
 `docs/api.md` in the
 [`pidgeiot`](https://github.com/justins-engineering/pidgeiot) repository
@@ -101,10 +103,10 @@ What the connector asks of the device, and what the library does about it:
   minutes, send each wake's readings as one batch
   (`CONFIG_PIGEON_TELEMETRY_BATCH`), and let replies ride the connection
   their uplink opened.
-- **1273 bytes an uplink frame**, the largest the nRF9160 modem accepted.
-  Build-time checks hold every frame under it, which is why a NIDD build
-  defaults to 7 telemetry keys (8 keys at the worst-case sizes make a
-  1323-byte body) and a 1024-byte batch arena, and caps
+- **1273 bytes an uplink frame**, the largest an nRF9160 on modem firmware
+  1.3.7 accepted. Build-time checks hold every frame under it, which is why
+  a NIDD build defaults to 7 telemetry keys (8 keys at the worst-case sizes
+  make a 1323-byte body) and a 1024-byte batch arena, and caps
   `CONFIG_PIGEON_SHADOW_CONFIG_MAX` at 1208. One reading of 7 keys at the
   worst-case sizes (1157 bytes) does not fit that arena and stays pending,
   which only pathological values reach.
