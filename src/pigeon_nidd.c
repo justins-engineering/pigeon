@@ -1166,7 +1166,8 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 
   err = pigeon_nidd_gate_locked();
   if (!err) {
-    memcpy(pigeon_nidd_current, current_config, config_len + 1);
+    /* The config may be the current_config pigeon_shadow_get() handed out, this very buffer. */
+    memmove(pigeon_nidd_current, current_config, config_len + 1);
     pigeon_nidd.report_version = current_version;
     pigeon_nidd.report_result = -ETIMEDOUT;
     k_sem_reset(&pigeon_nidd_report_sem);
