@@ -12,8 +12,9 @@ repo.
 
 ## Status
 
-All three connectors are implemented and run against the live platform:
-HTTPS, CoAP (over DTLS/UDP or over TLS/TCP), and MQTT. Around the
+Four connectors are implemented: HTTPS, CoAP (over DTLS/UDP or over
+TLS/TCP) and MQTT, which run against the live platform, and NIDD, the
+carrier's Non-IP Data Delivery over NB-IoT. Around the
 transports the module provides shadow sync, batched telemetry,
 device-authenticated firmware updates with download resume and a
 per-target attempt budget, remote dictionary-log upload, watchdog and
@@ -35,14 +36,17 @@ with `dovecote`:
   The HTTPS and CoAP connectors carry the pigeon's identity in the
   endpoint URL or the PSK identity and use `device_id` for logging only;
   the MQTT connector does not, so there it is the CONNECT client id and
-  username and has to be the real pigeon id.
+  username and has to be the real pigeon id. NIDD uses it for logging only
+  too: the modem's IMEI names the pigeon.
 - `struct pigeon_connector` — a `type` (`PIGEON_CONNECTOR_HTTPS` /
-  `PIGEON_CONNECTOR_COAP` / `PIGEON_CONNECTOR_MQTT`) plus
-  `struct pigeon_coap_config` and `struct pigeon_mqtt_config`, each only
-  consulted for its own connector. `endpoint`/`token` aren't struct fields
-  — they're build-time `CONFIG_PIGEON_ENDPOINT`/`CONFIG_PIGEON_TOKEN`
-  Kconfig strings, since the connector type is already a build-time choice
-  (see Kconfig below).
+  `PIGEON_CONNECTOR_COAP` / `PIGEON_CONNECTOR_MQTT` /
+  `PIGEON_CONNECTOR_NIDD`) plus `struct pigeon_coap_config` and
+  `struct pigeon_mqtt_config`, each only consulted for its own connector.
+  `endpoint`/`token` aren't struct fields — they're build-time
+  `CONFIG_PIGEON_ENDPOINT`/`CONFIG_PIGEON_TOKEN` Kconfig strings, since the
+  connector type is already a build-time choice (see Kconfig below). NIDD
+  has no member of its own: its claim key is `CONFIG_PIGEON_NIDD_CLAIM_KEY`
+  and its APN is in `CONFIG_PIGEON_ENDPOINT`.
   **Note:** the CoAP connector picks one of two transports at build time,
   CoAP-over-DTLS/UDP (RFC 7252, `coaps://`) or CoAP-over-TLS/TCP (RFC 8323,
   `coaps+tcp://`). The platform terminates both on one authority and port,
@@ -53,6 +57,88 @@ with `dovecote`:
   `GET /pigeon/shadow/get`.
 - `struct pigeon_shadow_update_request` — the body for
   `POST /pigeon/shadow/update`.
+
+## NIDD
+
+`CONFIG_PIGEON_CONNECTOR_NIDD` (nRF Connect SDK and the nRF91 modem only,
+`src/pigeon_nidd.c`) carries a pigeon over the carrier's Non-IP Data
+Delivery: frames on a raw socket over a Non-IP PDN on the APN named in
+`CONFIG_PIGEON_ENDPOINT` (`nidd://VZWSCEF` on Verizon), which the carrier
+hands to ThingSpace and ThingSpace posts to the platform. There is no TLS
+and no bearer token. The SIM authenticates the device to the carrier, the
+modem's IMEI names the pigeon, and the claim key in
+`CONFIG_PIGEON_NIDD_CLAIM_KEY` binds the device to its pigeon and verifies
+every frame the platform sends. Like the MQTT connector it is a transport
+and a receive channel at once: call `pigeon_init()` before the attach,
+`pigeon_nidd_start()` after it, and `pigeon_nidd_stop()` before the modem
+is powered off.
+
+`docs/api.md` in the
+[`pidgeiot`](https://github.com/justins-engineering/pidgeiot) repository
+("NIDD frames", "NIDD downlink and replies") is the authority on every
+byte; this table summarises it:
+
+| Byte 0 | Name | Direction | Body |
+|---|---|---|---|
+| `0x01` | `TELEMETRY` | device to platform | A telemetry route body, flat or batched |
+| `0x02` | `SHADOW_REPORT` | device to platform | A shadow report route body |
+| `0x03` | reserved | device to platform | Log upload, not offered |
+| `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
+| `0x81` | `SHADOW` | platform to device | `<target_version> <current_version>\n`, `target_config`, tag |
+| `0x82` | `STATUS` | platform to device | `<code> <arg>\n`, tag; codes `0` STORED, `1` PAUSED, `2` UNCLAIMED |
+| `0x83` | reserved | platform to device | Application data, not offered |
+
+No frame holds a NUL byte. A platform frame ends in a 16-character tag,
+the lowercase hex of the first 8 bytes of HMAC-SHA256 over every byte
+before it, keyed by the claim key; the library drops a frame whose tag
+does not verify. Device frames carry no tag.
+
+What the connector asks of the device, and what the library does about it:
+
+- **At most four radio accesses an hour**, uplink and downlink together.
+  The library has no cadence of its own and cannot count a paged downlink,
+  so this is the application's to keep: wake no more often than every 15
+  minutes, send each wake's readings as one batch
+  (`CONFIG_PIGEON_TELEMETRY_BATCH`), and let replies ride the connection
+  their uplink opened.
+- **1273 bytes an uplink frame**, the largest the nRF9160 modem accepted.
+  Build-time checks hold every frame under it, which is why a NIDD build
+  defaults to 7 telemetry keys (8 keys at the worst-case sizes make a
+  1323-byte body) and a 1024-byte batch arena, and caps
+  `CONFIG_PIGEON_SHADOW_CONFIG_MAX` at 1208. One reading of 7 keys at the
+  worst-case sizes (1157 bytes) does not fit that arena and stays pending,
+  which only pathological values reach.
+- **`HELLO` at every start**, and again after a `STATUS UNCLAIMED 0`, at
+  most hourly. `UNCLAIMED 1`, a refused key, makes billable sends answer
+  `-EACCES` until the next boot; `PAUSED` makes them answer `-EAGAIN` for
+  the time it names. Both are answered without a radio access.
+- **The connection is held for the reply.** Every send sets `RAI_ONGOING`;
+  once the reply owed to a `HELLO` or a shadow report has arrived, the
+  library requests release (`RAI_NO_DATA`) after
+  `CONFIG_PIGEON_NIDD_RAI_IDLE_MS` of quiet. A wake of telemetry alone
+  leaves the release to the network.
+- **PSM and eDRX are written at every boot**, because the modem keeps both
+  across images. The library requests PSM and writes eDRX from
+  `pigeon_init()`; the application sets the timers. Verizon NB-IoT refused
+  NCS's 30-minute periodic TAU and accepted 190 minutes, so a NIDD build
+  sets `CONFIG_LTE_PSM_REQ=y` and `CONFIG_LTE_PSM_REQ_RPTAU="00010011"`.
+  Keep eDRX off (`CONFIG_LTE_EDRX_REQ` unset) or its cycle shorter than the
+  granted active time, or a pushed shadow may never be paged. The library
+  logs what the network grants.
+- **NB-IoT only.** The build fails unless the network mode is NB-IoT, or a
+  dual mode preferring it.
+
+`pigeon_shadow_get()` fetches nothing: it serves the newest `SHADOW` the
+platform has sent, waiting up to `CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC` for
+the reply to `HELLO` on the first call. `pigeon_shadow_report()` waits up
+to `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC` for its confirmation, and answers
+`-EDEADLK` from the event callback, which runs on the thread that receives
+that confirmation. The library receives a `target_config` of at most
+`CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1` bytes (319 by default); the platform
+accepts larger ones, which the device drops with a log line saying so.
+`CONFIG_PIGEON_WATCHDOG` is fed only by a delivered flush, so a NIDD build
+that enables it needs a timeout above its wake interval plus any `PAUSED`
+hold.
 
 ## Firmware updates (FOTA)
 
@@ -71,7 +157,9 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   from the build-time `CONFIG_PIGEON_FOTA_CURRENT_VERSION` string.
 - `pigeon_fota_apply(info)` — chunked, device-authed HTTP Range GETs
   against `<CONFIG_PIGEON_ENDPOINT>/firmware`
-  (`CONFIG_PIGEON_FOTA_CHUNK_SIZE` bytes at a time, HTTPS connector only),
+  (`CONFIG_PIGEON_FOTA_CHUNK_SIZE` bytes at a time, always over HTTPS: on
+  the HTTPS connector, on MQTT, and on NIDD with a dedicated Non-IP
+  context, the last two fetching from `CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT`),
   writing straight into MCUboot's secondary slot via Zephyr's `dfu_target`
   as each chunk arrives — the image is never held whole in RAM. Verifies
   the downloaded byte count and a streamed sha256 against `info` before
@@ -194,16 +282,21 @@ ones worth knowing before reading it:
   `pigeon_core.c` unconditionally and only the transport and feature
   sources are gated behind it.
 - `CONFIG_PIGEON_CONNECTOR_HTTPS` / `CONFIG_PIGEON_CONNECTOR_COAP` /
-  `CONFIG_PIGEON_CONNECTOR_MQTT` — mutually exclusive choice of transport.
-  CoAP then chooses `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or
-  `_UDP`; MQTT chooses `CONFIG_PIGEON_MQTT_AUTH_CERT` or `_PSK`.
+  `CONFIG_PIGEON_CONNECTOR_MQTT` / `CONFIG_PIGEON_CONNECTOR_NIDD` — mutually
+  exclusive choice of transport. CoAP then chooses
+  `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or `_UDP`; MQTT chooses
+  `CONFIG_PIGEON_MQTT_AUTH_CERT` or `_PSK`; NIDD needs
+  `CONFIG_PIGEON_NIDD_CLAIM_KEY` and has `_DEDICATED_CID` (default y),
+  `_RAI_IDLE_MS`, `_REPLY_WAIT_SEC`, `_SHADOW_WAIT_SEC` and
+  `_THREAD_STACK_SIZE`.
 - `CONFIG_PIGEON_ENDPOINT` / `CONFIG_PIGEON_TOKEN` — the backend URL and
   the pigeon's bearer credential. Deliberately not nested under
   `CONFIG_PIGEON`, since `pigeon_core.c` reads them either way. The token
   is an opaque binary credential the platform verifies against this
   pigeon's own stored public key, not a JWT; the connectors that
   authenticate through a PSK handshake instead (CoAP, and MQTT in PSK
-  mode) never read it, so those builds may leave it empty.
+  mode) never read it, so those builds may leave it empty. NIDD reads it
+  only for FOTA over the IP PDN.
 - Optional features, all `default n` unless noted:
   `CONFIG_PIGEON_WS` (a persistent push channel alongside HTTPS),
   `CONFIG_PIGEON_TELEMETRY_BATCH`, `CONFIG_PIGEON_FOTA` (with
