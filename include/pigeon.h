@@ -339,14 +339,15 @@ int pigeon_shadow_flush(void);
  * -EAGAIN if it has not landed yet; -ENOTCONN means the session is down.
  *
  * On CONFIG_PIGEON_CONNECTOR_NIDD nothing is fetched either: the call serves
- * the newest SHADOW frame the platform has sent. The first call after
- * pigeon_nidd_start() waits up to CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC for the
- * reply to HELLO and returns -EAGAIN if none arrived; -ENOTCONN means the
- * connector was not started. A SHADOW frame carries no current_config and no
- * timestamp, so current_version is the newest version the platform has named,
- * current_config is the config this device last reported this boot ("" before
- * its first report, and ahead of current_version while that report awaits
- * confirmation), and updated_at is 0.
+ * the newest SHADOW frame the platform has sent. With none cached, a call
+ * made while the reply to a HELLO is owed waits for it, up to
+ * CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC after that HELLO went out; otherwise it
+ * returns -EAGAIN at once. -ENOTCONN means the connector was not started. A
+ * SHADOW frame carries no current_config and no timestamp, so current_version
+ * is the newest version the platform has named, current_config is the config
+ * this device last reported this boot ("" before its first report, and ahead
+ * of current_version while that report awaits confirmation), and updated_at
+ * is 0.
  *
  * target_config/current_config point into a static buffer owned by this
  * function: valid only until the next call, and only for the connector type

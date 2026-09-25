@@ -65,6 +65,7 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_NIDD_PAUSE_MAX_SEC 86400
 #define PIGEON_NIDD_HELLO_HOLD_MS (3600 * MSEC_PER_SEC)
 #define PIGEON_NIDD_REPLY_WAIT_MS (CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC * MSEC_PER_SEC)
+#define PIGEON_NIDD_SHADOW_WAIT_MS (CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC * MSEC_PER_SEC)
 #define PIGEON_NIDD_LOCK_WAIT K_SECONDS(10)
 /* Opening the socket can activate a PDN, which is a radio access, so retries are minutes apart. */
 #define PIGEON_NIDD_OPEN_BACKOFF_MIN_SEC 60
@@ -117,7 +118,7 @@ static struct k_thread pigeon_nidd_thread_data;
  */
 K_MUTEX_DEFINE(pigeon_nidd_lock);
 
-/* A newer SHADOW was cached. */
+/* A newer SHADOW was cached, or UNCLAIMED 1 said that none will come. */
 static K_SEM_DEFINE(pigeon_nidd_shadow_sem, 0, 1);
 /* The pending report was confirmed or refused. */
 static K_SEM_DEFINE(pigeon_nidd_report_sem, 0, 1);
@@ -732,6 +733,8 @@ static void pigeon_nidd_on_status(uint32_t code, uint32_t arg, struct pigeon_nid
         if (pigeon_nidd.hello_owed) {
           pigeon_nidd.hello_owed = false;
           out->answered = true;
+          /* No SHADOW follows, so a pigeon_shadow_get() waiting for one stops now. */
+          k_sem_give(&pigeon_nidd_shadow_sem);
         }
         LOG_ERR(
             "NIDD: claim key refused: billable sends stop until reboot; rebuild with the "
@@ -1080,6 +1083,10 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   k_mutex_lock(&pigeon_nidd_lock, K_FOREVER);
   bool running = pigeon_nidd.running;
   bool have = pigeon_nidd.have_shadow;
+  /* Only the reply to a HELLO is worth a wait: nothing else is sure to bring a SHADOW. */
+  int64_t wait_ms = pigeon_nidd.hello_owed
+                        ? pigeon_nidd.hello_sent_ms + PIGEON_NIDD_SHADOW_WAIT_MS - k_uptime_get()
+                        : 0;
   k_mutex_unlock(&pigeon_nidd_lock);
 
   if (!running) {
@@ -1087,8 +1094,8 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
     return -ENOTCONN;
   }
 
-  if (!have && k_sem_take(&pigeon_nidd_shadow_sem, K_SECONDS(CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC))) {
-    LOG_WRN("NIDD: no SHADOW within %d s", CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC);
+  if (!have && wait_ms > 0 && k_sem_take(&pigeon_nidd_shadow_sem, K_MSEC(wait_ms))) {
+    LOG_WRN("NIDD: no SHADOW within %d s of HELLO", CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC);
     return -EAGAIN;
   }
 

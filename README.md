@@ -131,11 +131,12 @@ What the connector asks of the device, and what the library does about it:
   dual mode preferring it.
 
 `pigeon_shadow_get()` fetches nothing: it serves the newest `SHADOW` the
-platform has sent, waiting up to `CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC` for
-the reply to `HELLO` on the first call. `pigeon_shadow_report()` waits up
-to `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC` for its confirmation, and answers
-`-EDEADLK` from the event callback, which runs on the thread that receives
-that confirmation. The library receives a `target_config` of at most
+platform has sent. With none cached it waits only while the reply to a
+`HELLO` is owed, up to `CONFIG_PIGEON_NIDD_SHADOW_WAIT_SEC` after that
+`HELLO`, and otherwise answers `-EAGAIN` at once. `pigeon_shadow_report()`
+waits up to `CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC` for its confirmation, and
+answers `-EDEADLK` from the event callback, which runs on the thread that
+receives that confirmation. The library receives a `target_config` of at most
 `CONFIG_PIGEON_SHADOW_CONFIG_MAX - 1` bytes (319 by default); the platform
 accepts larger ones, which the device drops with a log line saying so.
 `CONFIG_PIGEON_WATCHDOG` is fed only by a delivered flush, so a NIDD build

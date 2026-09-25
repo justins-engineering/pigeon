@@ -496,7 +496,7 @@ config PIGEON_NIDD_REPLY_WAIT_SEC
   range 1 300
 
 config PIGEON_NIDD_SHADOW_WAIT_SEC
-  int "How long the first pigeon_shadow_get() waits for the reply to HELLO (seconds)"
+  int "How long pigeon_shadow_get() waits for the reply to a HELLO (seconds)"
   default 60
   range 1 600
 
