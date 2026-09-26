@@ -24,6 +24,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
@@ -51,6 +52,8 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_NIDD_KEY_CHARS (2 * PIGEON_NIDD_KEY_BYTES)
 /* A header number is a u32 written in decimal. */
 #define PIGEON_NIDD_HEADER_DIGITS 10
+/* A TELEMETRY frame opens with its send sequence and a newline. */
+#define PIGEON_NIDD_SEQUENCE_MAX (PIGEON_NIDD_HEADER_DIGITS + 1)
 
 #define PIGEON_NIDD_TELEMETRY 0x01
 #define PIGEON_NIDD_SHADOW_REPORT 0x02
@@ -77,15 +80,16 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 /* Below the application's own work, as the other connectors' threads are. */
 #define PIGEON_NIDD_THREAD_PRIORITY 10
 
+/* A body's NUL stands in for the type byte. */
 BUILD_ASSERT(
-    PIGEON_TELEMETRY_BODY_MAX <= PIGEON_NIDD_UPLINK_MAX,
+    PIGEON_NIDD_SEQUENCE_MAX + PIGEON_TELEMETRY_BODY_MAX <= PIGEON_NIDD_UPLINK_MAX,
     "Lower CONFIG_PIGEON_TELEMETRY_MAX_KEYS: a flat telemetry body must fit one 1273-byte NIDD "
     "frame"
 );
 
 #if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
 BUILD_ASSERT(
-    PIGEON_TELEMETRY_BATCH_BODY_MAX <= PIGEON_NIDD_UPLINK_MAX,
+    PIGEON_NIDD_SEQUENCE_MAX + PIGEON_TELEMETRY_BATCH_BODY_MAX <= PIGEON_NIDD_UPLINK_MAX,
     "Lower CONFIG_PIGEON_TELEMETRY_BATCH_BUF_SIZE or CONFIG_PIGEON_TELEMETRY_BATCH_DEPTH: a "
     "telemetry batch must fit one 1273-byte NIDD frame"
 );
@@ -179,6 +183,8 @@ static struct {
   int64_t hello_sent_ms;
   int64_t paused_until_ms;
   bool unclaimed; /* UNCLAIMED 1 seen; only a reboot clears it */
+  /* The next TELEMETRY frame's send sequence. */
+  uint32_t telemetry_seq;
 } pigeon_nidd = {
     .fd = -1,
     .report_version = -1,
@@ -394,6 +400,10 @@ int pigeon_nidd_configure(void) {
     LOG_INF("NIDD: eDRX %s", IS_ENABLED(CONFIG_LTE_EDRX_REQ) ? "requested" : "off");
   }
 
+  /* The carrier can deliver one frame twice, and the platform stores a TELEMETRY frame only the
+   * first time it sees it. The sequence keeps two sends of the same readings apart, and a random
+   * start keeps one boot's frames from repeating another's. */
+  pigeon_nidd.telemetry_seq = sys_rand32_get();
   pigeon_nidd.configured = true;
   LOG_INF(
       "NIDD: Non-IP on CID %u, APN %s", (unsigned int)atomic_get(&pigeon_nidd_cid), pigeon_nidd_apn
@@ -1205,7 +1215,8 @@ int pigeon_transport_report_telemetry(
     *res = (struct pigeon_http_result){0};
   }
 
-  if (1 + body_len > sizeof(pigeon_nidd_tx)) {
+  /* Counted at the longest sequence, so whether a body fits never depends on the number. */
+  if (1 + PIGEON_NIDD_SEQUENCE_MAX + body_len > sizeof(pigeon_nidd_tx)) {
     return -EMSGSIZE;
   }
 
@@ -1219,9 +1230,14 @@ int pigeon_transport_report_telemetry(
         (uint32_t)DIV_ROUND_UP(pigeon_nidd.paused_until_ms - k_uptime_get(), (int64_t)MSEC_PER_SEC);
   }
   if (!err) {
+    int header = snprintk(
+        (char *)&pigeon_nidd_tx[1], PIGEON_NIDD_SEQUENCE_MAX + 1, "%u\n",
+        (unsigned int)pigeon_nidd.telemetry_seq++
+    );
+
     pigeon_nidd_tx[0] = PIGEON_NIDD_TELEMETRY;
-    memcpy(&pigeon_nidd_tx[1], body, body_len);
-    err = pigeon_nidd_transmit_locked(1 + body_len, "TELEMETRY");
+    memcpy(&pigeon_nidd_tx[1 + header], body, body_len);
+    err = pigeon_nidd_transmit_locked(1 + (size_t)header + body_len, "TELEMETRY");
   }
 
   k_mutex_unlock(&pigeon_nidd_lock);

@@ -206,7 +206,9 @@ int pigeon_telemetry_set(const char *key, const char *val);
  * transport answers -EAGAIN while the platform holds the account paused and
  * -EACCES once the claim key has been refused, both without a radio access,
  * and -ETIMEDOUT when the modem did not take the frame in time. -EAGAIN
- * means only a pause here.
+ * means only a pause here. Each frame carries a send sequence, so the
+ * platform stores a frame the carrier delivers twice only once, and two
+ * flushes of the same values are still two readings.
  *
  * @return 0 on success (all pending keys sent and cleared; under
  * CONFIG_PIGEON_TELEMETRY_BATCH, also when the reading was buffered and no
