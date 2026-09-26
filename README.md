@@ -54,9 +54,9 @@ with `dovecote`:
   selected.
 - `struct pigeon_shadow_doc` — `target_version`/`current_version` counters
   plus raw JSON `target_config`/`current_config` text, as returned by
-  `GET /pigeon/shadow/get`.
-- `struct pigeon_shadow_update_request` — the body for
-  `POST /pigeon/shadow/update`.
+  `GET /device/pigeons/:pigeon_id/shadow`.
+- `struct pigeon_shadow_update_request`: the body of the dashboard's
+  `PUT /pigeons/:pigeon_id/shadow`.
 
 ## NIDD
 
@@ -171,7 +171,8 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   (`CONFIG_PIGEON_FOTA_CHUNK_SIZE` bytes at a time, always over HTTPS: on
   the HTTPS connector, on MQTT, and on NIDD with a dedicated Non-IP
   context, the last two fetching from `CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT`),
-  writing straight into MCUboot's secondary slot via Zephyr's `dfu_target`
+  writing straight into MCUboot's secondary slot via Zephyr's `flash_img`
+  (NCS's `dfu_target` with `CONFIG_PIGEON_FOTA_NCS`)
   as each chunk arrives — the image is never held whole in RAM. Verifies
   the downloaded byte count and a streamed sha256 against `info` before
   scheduling a one-time MCUboot test-swap. Does **not** reboot: on success
@@ -244,37 +245,38 @@ against that budget — resuming is meant to be cheap. One that ends exactly
 where it began made no progress and is charged like a fresh attempt, so a
 transfer wedged at one offset still terminates.
 
-**Signing key:** MCUboot's own image signature check (`sysbuild.conf`:
-`SB_CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y`) is the actual security
-boundary for firmware authenticity — `pigeon_fota_apply()`'s sha256 check
-is only an integrity check against transport/flash corruption, not a
-signature. With no `CONFIG_BOOT_SIGNATURE_KEY_FILE` override, MCUboot signs
-against its upstream default dev key
-(`bootloader/mcuboot/root-ec-p256.pem`, pulled in by `west update`) —
-that key (and its matching private key) ships in the open-source MCUboot
-repo, so anyone can forge a signature against it. **Never ship a
-production device with the default key**: generate a real keypair
-(`imgtool keygen`), point `CONFIG_BOOT_SIGNATURE_KEY_FILE` at the public
-half in the MCUboot child image's own `prj.conf`
-(`pigeon-examples/samples/https_init/sysbuild/mcuboot/prj.conf`), and keep
-the private half off any machine that doesn't need to sign a release
-image.
+**Signing key:** MCUboot's own image signature check (ECDSA P-256, which
+pigeon-examples selects for every board in
+`samples/Kconfig.sysbuild.signing`) is the actual security boundary for
+firmware authenticity — `pigeon_fota_apply()`'s sha256 check is only an
+integrity check against transport/flash corruption, not a signature. With no
+`CONFIG_BOOT_SIGNATURE_KEY_FILE` override, MCUboot signs against its
+upstream default dev key (`bootloader/mcuboot/root-ec-p256.pem`, pulled in
+by `west update`) — that key (and its matching private key) ships in the
+open-source MCUboot repo, so anyone can forge a signature against it.
+**Never ship a production device with the default key**: generate a real
+keypair (`imgtool keygen -k <path> -t ecdsa-p256`), keep it outside the
+tree, and export `PIGEON_BOOT_SIGNATURE_KEY_FILE=<path>` in every build
+shell. pigeon-examples feeds that one file to both the bootloader and the
+image signer, which must always agree, so set the key there and nowhere
+else; an application of your own sets sysbuild's
+`SB_CONFIG_BOOT_SIGNATURE_KEY_FILE`, the symbol behind that variable. Keep
+the key off any machine that doesn't need to sign a release image.
 
-That boundary is per target, and on the ESP32-C6 it is currently absent
-rather than weak: Espressif's MCUboot config sets
-`CONFIG_BOOT_SIGNATURE_TYPE_NONE=y`
-(`bootloader/mcuboot/boot/zephyr/socs/esp32c6_hpcore.conf`), so those
-builds verify the image's own sha256 and check no signature at all. The
-nRF9160 builds resolve to ECDSA P256 as described above. Read the built
-`mcuboot/zephyr/.config` rather than assuming, and treat signing as
-unsolved on the C6 until that override is replaced.
+That boundary is per target. The ESP32-C6 board defaults the signature type
+to none (`zephyr/boards/espressif/esp32c6_devkitc/Kconfig.sysbuild`, echoed
+by MCUboot's `boot/zephyr/socs/esp32c6_hpcore.conf`), which checks no
+signature at all. pigeon-examples overrides that default to ECDSA P256 in
+`samples/Kconfig.sysbuild.signing`, so its ESP32-C6 builds verify a
+signature like the nRF91 ones, and an application of your own needs the same
+override. Read the built `mcuboot/zephyr/.config` rather than assuming.
 
 ## Build
 
 This is a Zephyr **module**, not a standalone app — `CMakeLists.txt`
 hard-fails if `ZEPHYR_BASE` isn't set. It must be pulled into a Zephyr
 application/workspace, either via a west manifest project entry or
-`ZEPHYR_EXTRA_MODULES` (see `pigeon-examples/samples/pigeon_module.cmake`
+`ZEPHYR_EXTRA_MODULES` (see `pigeon-examples/samples/common/app.cmake`
 for the latter):
 
 ```cmake
@@ -306,8 +308,10 @@ ones worth knowing before reading it:
   is an opaque binary credential the platform verifies against this
   pigeon's own stored public key, not a JWT; the connectors that
   authenticate through a PSK handshake instead (CoAP, and MQTT in PSK
-  mode) never read it, so those builds may leave it empty. NIDD reads it
-  only for FOTA over the IP PDN.
+  mode) never read it, so those builds may leave it empty, unless an MQTT
+  build also enables `CONFIG_PIGEON_FOTA`: its image download is an HTTPS
+  request that carries the token. NIDD reads it only for FOTA over the IP
+  PDN.
 - Optional features, all `default n` unless noted:
   `CONFIG_PIGEON_WS` (a persistent push channel alongside HTTPS),
   `CONFIG_PIGEON_TELEMETRY_BATCH`, `CONFIG_PIGEON_FOTA` (with
