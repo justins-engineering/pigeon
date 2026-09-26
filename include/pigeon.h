@@ -204,7 +204,9 @@ int pigeon_telemetry_set(const char *key, const char *val);
  *
  * On CONFIG_PIGEON_CONNECTOR_NIDD, 0 means the modem took the frame. The
  * transport answers -EAGAIN while the platform holds the account paused and
- * -EACCES once the claim key has been refused, both without a radio access.
+ * -EACCES once the claim key has been refused, both without a radio access,
+ * and -ETIMEDOUT when the modem did not take the frame in time. -EAGAIN
+ * means only a pause here.
  *
  * @return 0 on success (all pending keys sent and cleared; under
  * CONFIG_PIGEON_TELEMETRY_BATCH, also when the reading was buffered and no
@@ -374,14 +376,15 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
  *
  * On CONFIG_PIGEON_CONNECTOR_NIDD this sends one SHADOW_REPORT frame and waits
  * up to CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC for the platform to confirm it.
- * -ETIMEDOUT means no confirmation came in time: a later one still counts, and
- * reporting again is harmless. -EAGAIN means the account is paused and -EACCES
- * that the claim key was refused, both without a radio access. -EDEADLK means
- * the call came from the event callback, whose thread is the one that receives
- * the confirmation. -EMSGSIZE means current_config is
+ * -ETIMEDOUT means no confirmation came in time (a later one still counts) or
+ * the modem did not take the frame in time; reporting again is harmless either
+ * way. -EAGAIN means only that the account is paused and -EACCES that the
+ * claim key was refused, both without a radio access. -EDEADLK means the call
+ * came from the event callback, whose thread is the one that receives the
+ * confirmation. -EMSGSIZE means current_config is
  * CONFIG_PIGEON_SHADOW_CONFIG_MAX bytes or more, -ENOTCONN that no socket is
  * open (not started, or the Non-IP PDN is between retries), -EBUSY that the
- * connector stayed busy; a failed send returns its own negative errno.
+ * connector stayed busy; any other failed send returns its own negative errno.
  *
  * @param current_version The target_version that was just applied.
  * @param current_config Raw JSON object string describing the applied config.

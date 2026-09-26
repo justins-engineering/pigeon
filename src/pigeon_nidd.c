@@ -513,7 +513,9 @@ static int pigeon_nidd_open_locked(void) {
 }
 
 /* Sends the frame in pigeon_nidd_tx. Never asks for release: the reply it may draw arrives only
- * while the connection this send opened is up. */
+ * while the connection this send opened is up. Answers -ETIMEDOUT where the modem answers
+ * EAGAIN (a send past SO_SNDTIMEO, an AT command that waited out another), since a billable
+ * send answers -EAGAIN only for a paused account. */
 static int pigeon_nidd_transmit_locked(size_t len, const char *what) {
   int rai = RAI_ONGOING;
   int err;
@@ -521,7 +523,7 @@ static int pigeon_nidd_transmit_locked(size_t len, const char *what) {
   if (pigeon_nidd.fd < 0 || !atomic_get(&pigeon_nidd_pdn_up) || atomic_get(&pigeon_nidd_ctx_lost)) {
     err = pigeon_nidd_open_locked();
     if (err) {
-      return err;
+      return err == -EAGAIN ? -ETIMEDOUT : err;
     }
   }
 
@@ -543,7 +545,7 @@ static int pigeon_nidd_transmit_locked(size_t len, const char *what) {
     if (err == -ENETDOWN || err == -ENETUNREACH) {
       atomic_clear(&pigeon_nidd_pdn_up);
     }
-    return err;
+    return err == -EAGAIN ? -ETIMEDOUT : err;
   }
 
   LOG_INF("NIDD: sent %s, %u bytes", what, (unsigned int)len);
