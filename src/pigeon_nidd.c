@@ -115,6 +115,12 @@ BUILD_ASSERT(
     "NIDD is served over NB-IoT only: set CONFIG_LTE_NETWORK_MODE_NBIOT"
 );
 
+BUILD_ASSERT(
+    !IS_ENABLED(CONFIG_TIMER_RANDOM_GENERATOR),
+    "Select CONFIG_ENTROPY_DEVICE_RANDOM_GENERATOR or CONFIG_XOSHIRO_RANDOM_GENERATOR: the NIDD "
+    "send sequence must start at a random value each boot"
+);
+
 K_THREAD_STACK_DEFINE(pigeon_nidd_stack, CONFIG_PIGEON_NIDD_THREAD_STACK_SIZE);
 static struct k_thread pigeon_nidd_thread_data;
 
