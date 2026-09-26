@@ -82,7 +82,7 @@ byte; this table summarises it:
 
 | Byte 0 | Name | Direction | Body |
 |---|---|---|---|
-| `0x01` | `TELEMETRY` | device to platform | A telemetry route body, flat or batched |
+| `0x01` | `TELEMETRY` | device to platform | `<sequence>\n`, then a telemetry route body, flat or batched |
 | `0x02` | `SHADOW_REPORT` | device to platform | A shadow report route body |
 | `0x03` | reserved | device to platform | Log upload, not offered |
 | `0x04` | `HELLO` | device to platform | The claim key as 32 lowercase hex characters |
@@ -93,7 +93,11 @@ byte; this table summarises it:
 No frame holds a NUL byte. A platform frame ends in a 16-character tag,
 the lowercase hex of the first 8 bytes of HMAC-SHA256 over every byte
 before it, keyed by the claim key; the library drops a frame whose tag
-does not verify. Device frames carry no tag.
+does not verify. Device frames carry no tag. A `TELEMETRY` frame opens with
+its send sequence, a u32 in decimal that starts at a random value each boot
+and counts up by one per frame: the carrier can deliver one frame twice,
+and the platform stores a frame it has already seen only once, so the
+sequence is what keeps two sends of the same readings apart.
 
 What the connector asks of the device, and what the library does about it:
 
@@ -104,9 +108,10 @@ What the connector asks of the device, and what the library does about it:
   (`CONFIG_PIGEON_TELEMETRY_BATCH`), and let replies ride the connection
   their uplink opened.
 - **1273 bytes an uplink frame**, the largest an nRF9160 on modem firmware
-  1.3.7 accepted. Build-time checks hold every frame under it, which is why
-  a NIDD build defaults to 7 telemetry keys (8 keys at the worst-case sizes
-  make a 1323-byte body) and a 1024-byte batch arena, and caps
+  1.3.7 accepted. Build-time checks hold every frame under it, counting a
+  telemetry frame's sequence at its longest (11 bytes), which is why a NIDD
+  build defaults to 7 telemetry keys (8 keys at the worst-case sizes make a
+  1323-byte body) and a 1024-byte batch arena at a depth of 6, and caps
   `CONFIG_PIGEON_SHADOW_CONFIG_MAX` at 1208. One reading of 7 keys at the
   worst-case sizes (1157 bytes) does not fit that arena and stays pending,
   which only pathological values reach.
