@@ -37,5 +37,8 @@ try refused shell-settings "CONFIG_PIGEON_SHELL=1;CONFIG_SETTINGS_SHELL=1"
 try refused shell-flash "CONFIG_PIGEON_SHELL=1;CONFIG_FLASH_SHELL=1"
 try builds shell-alone "CONFIG_PIGEON_SHELL=1"
 try builds settings-shell-alone "CONFIG_SETTINGS_SHELL=1"
+try refused mbedtls-debug-info "CONFIG_MBEDTLS_DEBUG=1;CONFIG_MBEDTLS_DEBUG_LEVEL=3"
+try builds mbedtls-debug-warn "CONFIG_MBEDTLS_DEBUG=1;CONFIG_MBEDTLS_DEBUG_LEVEL=2"
+try refused mcumgr-settings "CONFIG_MCUMGR_GRP_SETTINGS=1"
 
 exit $status

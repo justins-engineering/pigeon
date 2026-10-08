@@ -961,9 +961,11 @@ config PIGEON_TOKEN_ROTATION
     and, for example, CONFIG_SETTINGS_NVS) rather than silently dropping the
     option: an image that claims rotation but cannot keep a rotated token is
     a lockout image once its pigeon has rotated. It also refuses HTTP client
-    debug logging, which logs the Authorization header, and
-    CONFIG_PIGEON_SHELL_ALLOW_ALL, CONFIG_SETTINGS_SHELL or CONFIG_FLASH_SHELL
-    beside CONFIG_PIGEON_SHELL, each of which reaches the stored token.
+    debug logging, which logs the Authorization header, mbedTLS debug at
+    level 3 or above, which logs the TLS secrets and plaintext,
+    CONFIG_MCUMGR_GRP_SETTINGS, and CONFIG_PIGEON_SHELL_ALLOW_ALL,
+    CONFIG_SETTINGS_SHELL or CONFIG_FLASH_SHELL beside CONFIG_PIGEON_SHELL,
+    each of which reaches the stored token.
 
 config PIGEON_WS
   bool "WebSocket push channel (persistent connection to <endpoint>/ws)"

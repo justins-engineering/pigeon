@@ -45,6 +45,23 @@ BUILD_ASSERT(
 );
 #endif
 
+/* mbedTLS logs the master secret from level 3 and each record's plaintext at level 4, so a
+ * captured session or the log alone carries the Authorization header and the new token. */
+#if defined(CONFIG_MBEDTLS_DEBUG) && defined(CONFIG_MBEDTLS_DEBUG_LEVEL)
+BUILD_ASSERT(
+    CONFIG_MBEDTLS_DEBUG_LEVEL < 3,
+    "CONFIG_PIGEON_TOKEN_ROTATION refuses mbedTLS debug at level 3 or above: it logs the TLS "
+    "secrets and plaintext that carry the token"
+);
+#endif
+
+/* The settings group reads any record over any MCUmgr transport, a network one included. */
+BUILD_ASSERT(
+    !IS_ENABLED(CONFIG_MCUMGR_GRP_SETTINGS),
+    "CONFIG_PIGEON_TOKEN_ROTATION refuses CONFIG_MCUMGR_GRP_SETTINGS: MCUmgr could read the "
+    "stored token"
+);
+
 /* Either shell can read or rewrite the record, and the allowlist matches by prefix. */
 BUILD_ASSERT(
     !IS_ENABLED(CONFIG_PIGEON_SHELL_ALLOW_ALL),
