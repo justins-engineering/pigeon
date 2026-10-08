@@ -17,6 +17,10 @@
 #define DAY_MS       (24LL * 60 * 60 * 1000)
 #define OTHER_ENDPOINT "https://api.example.invalid/device/pigeons/other"
 
+/* This pigeon's record key, and another pigeon's. */
+static char key[PIGEON_TOKEN_KEY_MAX];
+static char other_key[PIGEON_TOKEN_KEY_MAX];
+
 /* Private to the settings subsystem, but defined with external linkage. */
 extern struct settings_store *settings_save_dst;
 
@@ -151,7 +155,7 @@ static uint32_t drop_per_ten;
 
 static int lying_save(struct settings_store *cs, const char *name, const char *value, size_t len) {
   ARG_UNUSED(cs);
-  if (strcmp(name, PIGEON_TOKEN_SETTINGS_KEY) == 0 && value != NULL) {
+  if (strcmp(name, key) == 0 && value != NULL) {
     token_writes++;
     if (token_writes == fail_write) {
       return -EIO;
@@ -168,7 +172,7 @@ static struct settings_store lying_store = {.cs_itf = &lying_itf};
 
 static int read_record(struct pigeon_token_record *rec) {
   memset(rec, 0, sizeof(*rec));
-  ssize_t n = settings_load_one(PIGEON_TOKEN_SETTINGS_KEY, rec, sizeof(*rec));
+  ssize_t n = settings_load_one(key, rec, sizeof(*rec));
 
   return n == sizeof(*rec) ? 0 : -ENOENT;
 }
@@ -187,6 +191,8 @@ static bool cycle(int64_t now_ms) {
 static void reboot(void) { pigeon_token_reset(); }
 
 static void *suite_setup(void) {
+  zassert_ok(pigeon_token_settings_key(CONFIG_PIGEON_ENDPOINT, key, sizeof(key)));
+  zassert_ok(pigeon_token_settings_key(OTHER_ENDPOINT, other_key, sizeof(other_key)));
   zassert_ok(settings_subsys_init());
   real_dst = settings_save_dst;
   settings_dst_register(&lying_store);
@@ -195,7 +201,8 @@ static void *suite_setup(void) {
 
 static void before_each(void *fixture) {
   ARG_UNUSED(fixture);
-  zassert_ok(settings_delete(PIGEON_TOKEN_SETTINGS_KEY));
+  zassert_ok(settings_delete(key));
+  zassert_ok(settings_delete(other_key));
   memset(&srv, 0, sizeof(srv));
   strcpy(srv.current, CONFIG_PIGEON_TOKEN);
   gate_value = PIGEON_TOKEN_GATE_OPEN;
@@ -302,9 +309,29 @@ ZTEST(token, test_choose_prefers_the_record_unless_it_cannot_serve) {
   zassert_equal(pigeon_token_choose(&rec, OTHER_ENDPOINT, CONFIG_PIGEON_TOKEN),
                 CONFIG_PIGEON_TOKEN, "another endpoint");
 
+  zassert_equal(pigeon_token_choose(&rec, "http://moved.example.invalid/x/test/",
+                                    CONFIG_PIGEON_TOKEN),
+                rec.active, "the same pigeon behind another host");
+
   rec.active[10] = '\n';
   zassert_equal(pigeon_token_choose(&rec, CONFIG_PIGEON_ENDPOINT, CONFIG_PIGEON_TOKEN),
                 CONFIG_PIGEON_TOKEN, "corrupt record");
+}
+
+ZTEST(token, test_the_settings_key_names_the_pigeon) {
+  char out[PIGEON_TOKEN_KEY_MAX];
+
+  zassert_str_equal(key, "pigeon/token/test");
+  zassert_ok(pigeon_token_settings_key("https://h/device/pigeons/0123456789abcdef0123/", out,
+                                       sizeof(out)));
+  zassert_str_equal(out, "pigeon/token/0123456789abcdef", "the id is cut to 16 characters");
+  zassert_equal(pigeon_token_settings_key("https://h/device/pigeons/a=b", out, sizeof(out)),
+                -EINVAL);
+  zassert_equal(pigeon_token_settings_key("///", out, sizeof(out)), -EINVAL);
+  zassert_equal(pigeon_token_settings_key(CONFIG_PIGEON_ENDPOINT, out, 8), -ENOSPC);
+  zassert_true(pigeon_token_same_pigeon("https://a/p/x", "http://b/q/x/"));
+  zassert_false(pigeon_token_same_pigeon("https://a/p/x", "https://a/p/xy"));
+  zassert_false(pigeon_token_same_pigeon("/", "/"));
 }
 
 /* The record (D14). */
@@ -312,7 +339,7 @@ ZTEST(token, test_choose_prefers_the_record_unless_it_cannot_serve) {
 ZTEST(token, test_load_refuses_a_size_mismatch) {
   uint8_t short_rec[10] = {0};
 
-  zassert_ok(settings_save_one(PIGEON_TOKEN_SETTINGS_KEY, short_rec, sizeof(short_rec)));
+  zassert_ok(settings_save_one(key, short_rec, sizeof(short_rec)));
   reboot();
   zassert_equal(pigeon_token_current(), CONFIG_PIGEON_TOKEN);
   zassert_false(pigeon_token_pending());
@@ -324,13 +351,32 @@ ZTEST(token, test_record_for_another_endpoint_reads_empty) {
   strcpy(rec.endpoint, OTHER_ENDPOINT);
   mint(rec.active, PIGEON_TOKEN_VERSION, BAKED_EXPIRY + 50U, 11);
   mint(rec.pending, PIGEON_TOKEN_VERSION, BAKED_EXPIRY + 60U, 12);
-  zassert_ok(settings_save_one(PIGEON_TOKEN_SETTINGS_KEY, &rec, sizeof(rec)));
+  zassert_ok(settings_save_one(key, &rec, sizeof(rec)));
   reboot();
 
   zassert_equal(pigeon_token_current(), CONFIG_PIGEON_TOKEN);
   zassert_false(pigeon_token_pending(), "another pigeon's pending token must not be proven");
   pigeon_token_prove(fake_send);
   zassert_equal(srv.calls, 0);
+}
+
+/* Another pigeon's image on this board, rotating that pigeon, saves under that pigeon's key. */
+ZTEST(token, test_another_pigeons_record_leaves_this_one_alone) {
+  struct pigeon_token_record theirs = {0};
+  struct pigeon_token_record rec;
+
+  srv.due = true;
+  zassert_true(cycle(0));
+  zassert_equal(srv.promotions, 1);
+
+  strcpy(theirs.endpoint, OTHER_ENDPOINT);
+  mint(theirs.active, PIGEON_TOKEN_VERSION, BAKED_EXPIRY + 70U, 13);
+  zassert_ok(settings_save_one(other_key, &theirs, sizeof(theirs)));
+  reboot();
+
+  zassert_ok(read_record(&rec));
+  zassert_str_equal(rec.active, srv.current);
+  zassert_true(server_accepts(pigeon_token_current()), "this pigeon's rotated token survives");
 }
 
 /* The check and the proof (D17, D19). */

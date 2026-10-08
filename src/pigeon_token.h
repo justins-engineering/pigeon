@@ -20,11 +20,19 @@
 #define PIGEON_TOKEN_LEN     92
 #define PIGEON_TOKEN_VERSION 1
 
+/*
+ * Each pigeon's record has its own key, "pigeon/token/<first 16 characters of the pigeon id>",
+ * so an image built for another pigeon, run on this board by mistake, saves beside this
+ * pigeon's record and never over it.
+ */
 #define PIGEON_TOKEN_SETTINGS_KEY "pigeon/token"
+#define PIGEON_TOKEN_KEY_ID_LEN   16
+#define PIGEON_TOKEN_KEY_MAX      (sizeof(PIGEON_TOKEN_SETTINGS_KEY "/") + PIGEON_TOKEN_KEY_ID_LEN)
 
 /* Layout is frozen: a later field gets a new key, and a load refuses any other size. */
 struct pigeon_token_record {
-  /* CONFIG_PIGEON_ENDPOINT this record was written under. */
+  /* CONFIG_PIGEON_ENDPOINT this record was written under. Only its last path segment, the
+   * pigeon id, binds the record: a token belongs to its pigeon, whichever host serves it. */
   char endpoint[128];
   char active[PIGEON_TOKEN_LEN + 1];
   /* Received and saved, not yet proven; "" when no rotation is in flight. */
@@ -58,7 +66,7 @@ typedef enum pigeon_token_gate (*pigeon_token_gate_fn)(void);
 /*
  * The token for the next request (D19 step 3): the record's active token, or
  * CONFIG_PIGEON_TOKEN when the record is empty, was written for another
- * endpoint, or its active token's signed expiry is earlier than the baked
+ * pigeon, or its active token's signed expiry is earlier than the baked
  * one's (a keep-storage reflash after a refresh). The record changes only
  * under the transport lock, so call this under it and copy the result
  * before releasing it.
@@ -110,6 +118,15 @@ uint32_t pigeon_token_expiry(const char *token);
  * into out, never into anything a caller of pigeon_shadow_get() still reads.
  */
 int pigeon_token_parse_reply(const char *body, char out[PIGEON_TOKEN_LEN + 1]);
+
+/* Whether two endpoints name the same pigeon: the same non-empty last path segment. */
+bool pigeon_token_same_pigeon(const char *a, const char *b);
+
+/*
+ * Writes the record's settings key for endpoint into out. -EINVAL when the endpoint has no
+ * last path segment, or one a settings name cannot carry; -ENOSPC when out is too small.
+ */
+int pigeon_token_settings_key(const char *endpoint, char *out, size_t cap);
 
 /* D19 step 3 as a pure choice over a loaded record. */
 const char *pigeon_token_choose(

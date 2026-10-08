@@ -939,14 +939,16 @@ config PIGEON_TOKEN_ROTATION
     Lets the platform replace this device's bearer token without a reflash.
     Once per boot, and every 24 h of uptime, pigeon_shadow_get() asks
     POST <CONFIG_PIGEON_ENDPOINT>/token whether rotation is due. When it is,
-    the reply carries a new token, which is saved to the settings record
-    "pigeon/token", read back, and then proven on the same route; only that
+    the reply carries a new token, which is saved to this pigeon's settings
+    record "pigeon/token/<pigeon id>", read back, and then proven on the
+    same route; only that
     proof retires the old token on the server, so a reset or a lost reply at
     any step leaves the device holding a token the server accepts.
     CONFIG_PIGEON_TOKEN stays required and becomes the first-boot value.
 
     The record lives in the settings partition, outside both image slots, so
-    any later image built with this option reads it. Once a device has
+    any later image built with this option for the same pigeon reads it,
+    whatever host its CONFIG_PIGEON_ENDPOINT names. Once a device has
     rotated, an image built without it, or a full-erase reflash, holds only
     the retired baked token.
 

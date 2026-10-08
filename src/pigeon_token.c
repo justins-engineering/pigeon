@@ -24,7 +24,7 @@ BUILD_ASSERT(
 );
 BUILD_ASSERT(
     sizeof(struct pigeon_token_record) == 314,
-    "the pigeon/token record layout is frozen; a new field needs a new settings key"
+    "the token record layout is frozen; a new field needs a new settings key"
 );
 BUILD_ASSERT(
     sizeof(CONFIG_PIGEON_ENDPOINT) <= sizeof(((struct pigeon_token_record *)0)->endpoint),
@@ -180,14 +180,67 @@ int pigeon_token_parse_reply(const char *body, char out[PIGEON_TOKEN_LEN + 1]) {
   return 0;
 }
 
+/* The pigeon id: the endpoint's last path segment, trailing slashes aside. */
+static size_t pigeon_token_id(const char *endpoint, const char **id) {
+  size_t end = strlen(endpoint);
+
+  while (end > 0 && endpoint[end - 1] == '/') {
+    end--;
+  }
+
+  size_t start = end;
+
+  while (start > 0 && endpoint[start - 1] != '/') {
+    start--;
+  }
+
+  *id = endpoint + start;
+
+  return end - start;
+}
+
+bool pigeon_token_same_pigeon(const char *a, const char *b) {
+  const char *id_a;
+  const char *id_b;
+  size_t len_a = pigeon_token_id(a, &id_a);
+  size_t len_b = pigeon_token_id(b, &id_b);
+
+  return len_a > 0 && len_a == len_b && memcmp(id_a, id_b, len_a) == 0;
+}
+
+int pigeon_token_settings_key(const char *endpoint, char *out, size_t cap) {
+  const char *id;
+  size_t len = pigeon_token_id(endpoint, &id);
+
+  /* '=' ends a settings name. */
+  if (len == 0 || memchr(id, '=', len) != NULL) {
+    return -EINVAL;
+  }
+  len = MIN(len, PIGEON_TOKEN_KEY_ID_LEN);
+
+  size_t prefix = sizeof(PIGEON_TOKEN_SETTINGS_KEY "/") - 1;
+
+  if (cap < prefix + len + 1) {
+    return -ENOSPC;
+  }
+
+  memcpy(out, PIGEON_TOKEN_SETTINGS_KEY "/", prefix);
+  memcpy(out + prefix, id, len);
+  out[prefix + len] = '\0';
+
+  return 0;
+}
+
 const char *pigeon_token_choose(
     const struct pigeon_token_record *rec, const char *endpoint, const char *baked
 ) {
-  if (strcmp(rec->endpoint, endpoint) != 0 || !pigeon_token_valid(rec->active)) {
+  if (!pigeon_token_same_pigeon(rec->endpoint, endpoint) || !pigeon_token_valid(rec->active)) {
     return baked;
   }
 
-  /* A keep-storage reflash after a refresh carries a newer token than anything stored. */
+  /* A keep-storage reflash after a refresh carries a newer token than anything stored. This
+   * holds only while every mint expires later than the one before it, which is why dovecote's
+   * DEVICE_TOKEN_LIFETIME_SECS must never shorten. */
   if (pigeon_token_valid(baked) && pigeon_token_expiry(rec->active) < pigeon_token_expiry(baked)) {
     return baked;
   }
@@ -239,10 +292,14 @@ static int pigeon_token_read(struct pigeon_token_record *rec) {
 
   memset(rec, 0, sizeof(*rec));
 
-  int err = settings_subsys_init();
+  char key[PIGEON_TOKEN_KEY_MAX];
+  int err = pigeon_token_settings_key(CONFIG_PIGEON_ENDPOINT, key, sizeof(key));
 
   if (err == 0) {
-    err = settings_load_subtree_direct(PIGEON_TOKEN_SETTINGS_KEY, pigeon_token_read_cb, &ctx);
+    err = settings_subsys_init();
+  }
+  if (err == 0) {
+    err = settings_load_subtree_direct(key, pigeon_token_read_cb, &ctx);
   }
 
   if (err || !ctx.found) {
@@ -264,7 +321,7 @@ static void pigeon_token_load(void) {
   rec->endpoint[sizeof(rec->endpoint) - 1] = '\0';
 
   /* A board moved to another pigeon by a new image must never present the old pigeon's token. */
-  if (strcmp(rec->endpoint, CONFIG_PIGEON_ENDPOINT) != 0) {
+  if (!pigeon_token_same_pigeon(rec->endpoint, CONFIG_PIGEON_ENDPOINT)) {
     memset(rec, 0, sizeof(*rec));
   }
   if (!pigeon_token_valid(rec->active)) {
@@ -285,10 +342,14 @@ static void pigeon_token_ensure_loaded(void) {
 
 /* D16: a write that reported success but did not land must not reach the server as a proof. */
 static int pigeon_token_store(const struct pigeon_token_record *rec) {
-  int err = settings_subsys_init();
+  char key[PIGEON_TOKEN_KEY_MAX];
+  int err = pigeon_token_settings_key(CONFIG_PIGEON_ENDPOINT, key, sizeof(key));
 
   if (err == 0) {
-    err = settings_save_one(PIGEON_TOKEN_SETTINGS_KEY, rec, sizeof(*rec));
+    err = settings_subsys_init();
+  }
+  if (err == 0) {
+    err = settings_save_one(key, rec, sizeof(*rec));
   }
   if (err) {
     return err;
