@@ -312,6 +312,13 @@ ones worth knowing before reading it:
   build also enables `CONFIG_PIGEON_FOTA`: its image download is an HTTPS
   request that carries the token. NIDD reads it only for FOTA over the IP
   PDN.
+- `CONFIG_PIGEON_TOKEN_ROTATION` (HTTPS, needs a settings backend, `default n`)
+  — lets the platform replace the token without a reflash. The device keeps
+  the token it rotated to in the settings record `pigeon/token`, outside both
+  image slots, and `CONFIG_PIGEON_TOKEN` becomes the first-boot value. Once a
+  device has rotated, an image built without the option, or a reflash that
+  erases the settings partition, holds only a retired token. The build
+  refuses HTTP client debug logging and shells that can reach the record.
 - Optional features, all `default n` unless noted:
   `CONFIG_PIGEON_WS` (a persistent push channel alongside HTTPS),
   `CONFIG_PIGEON_TELEMETRY_BATCH`, `CONFIG_PIGEON_FOTA` (with
