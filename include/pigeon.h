@@ -470,7 +470,9 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * Under CONFIG_PIGEON_TOKEN_ROTATION, returns -EBUSY without touching flash
  * or the network while a newly received token awaits its proof: an unproven
  * token can be refused mid-download. The proof runs before the next
- * pigeon_shadow_get(), so a later call goes ahead.
+ * pigeon_shadow_get(), so a later call goes ahead. pigeon_fota_token_pending()
+ * tells a caller that budgets its attempts in advance, so the refusal costs it
+ * nothing.
  *
  * Not safe to call concurrently with itself. Individual chunks are
  * retried in place rather than ending the transfer, and an HTTP 429 is
@@ -489,6 +491,17 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * @return 0 on success, negative errno on failure.
  */
 int pigeon_fota_apply(const struct pigeon_fota_info *info);
+
+/**
+ * @brief Whether pigeon_fota_apply() would return -EBUSY now.
+ *
+ * True only under CONFIG_PIGEON_TOKEN_ROTATION, while a newly received
+ * device token awaits its proof. An application that charges a download
+ * attempt before calling pigeon_fota_apply() checks this first, so a hold
+ * that downloads nothing does not spend its budget. Call it from the thread
+ * that calls pigeon_shadow_get(), where the proof runs.
+ */
+bool pigeon_fota_token_pending(void);
 
 /**
  * @brief Permanently confirm the currently running image, once healthy.

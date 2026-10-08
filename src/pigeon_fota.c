@@ -719,6 +719,14 @@ static int pigeon_fota_apply_run(const struct pigeon_fota_info *info) {
 
 bool pigeon_fota_download_running(void) { return atomic_get(&pigeon_fota_downloading) != 0; }
 
+bool pigeon_fota_token_pending(void) {
+  (void)pigeon_transport_lock(K_FOREVER);
+  bool pending = pigeon_token_pending();
+  pigeon_transport_unlock();
+
+  return pending;
+}
+
 int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   /* An unproven token can be refused, and a refused chunk costs this attempt; its proof runs
    * before the next shadow GET. Both sides read under the transport lock, so a token check
