@@ -304,13 +304,24 @@ static int pigeon_token_store(const struct pigeon_token_record *rec) {
   return memcmp(&back, rec, sizeof(back)) == 0 ? 0 : -EIO;
 }
 
+/* A copy with a bound the compiler can see, so a field filled to capacity is not a truncation
+ * warning. The field is zeroed first, which keeps it terminated. */
+static void pigeon_token_field_set(char *field, size_t cap, const char *value) {
+  size_t len = 0;
+
+  while (len < cap - 1 && value[len] != '\0') {
+    len++;
+  }
+  memcpy(field, value, len);
+}
+
 static void pigeon_token_record_set(
     struct pigeon_token_record *rec, const char *active, const char *pending
 ) {
   memset(rec, 0, sizeof(*rec));
-  strncpy(rec->endpoint, CONFIG_PIGEON_ENDPOINT, sizeof(rec->endpoint) - 1);
-  strncpy(rec->active, active, sizeof(rec->active) - 1);
-  strncpy(rec->pending, pending, sizeof(rec->pending) - 1);
+  pigeon_token_field_set(rec->endpoint, sizeof(rec->endpoint), CONFIG_PIGEON_ENDPOINT);
+  pigeon_token_field_set(rec->active, sizeof(rec->active), active);
+  pigeon_token_field_set(rec->pending, sizeof(rec->pending), pending);
 }
 
 const char *pigeon_token_current(void) {
