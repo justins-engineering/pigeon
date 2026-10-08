@@ -29,6 +29,13 @@
 #define PIGEON_TOKEN_KEY_ID_LEN   16
 #define PIGEON_TOKEN_KEY_MAX      (sizeof(PIGEON_TOKEN_SETTINGS_KEY "/") + PIGEON_TOKEN_KEY_ID_LEN)
 
+/*
+ * Compiled into every image built with this option. dovecote tags an uploaded image as able to
+ * read a rotated token by finding this string in its bytes, so the tag cannot be declared by
+ * mistake. A change to the record's key or layout gets a new marker.
+ */
+#define PIGEON_TOKEN_MARKER "pigeon-token-rotation/1"
+
 /* Layout is frozen: a later field gets a new key, and a load refuses any other size. */
 struct pigeon_token_record {
   /* CONFIG_PIGEON_ENDPOINT this record was written under. Only its last path segment, the

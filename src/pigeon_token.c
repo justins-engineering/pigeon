@@ -326,8 +326,14 @@ static int pigeon_token_read(struct pigeon_token_record *rec) {
   return err;
 }
 
+static const char pigeon_token_marker[] = PIGEON_TOKEN_MARKER;
+
 static void pigeon_token_load(void) {
   struct pigeon_token_record *rec = &pigeon_token.rec;
+
+  /* A reference the linker cannot discard, so the marker stays in the image. */
+  (void)*(volatile const char *)pigeon_token_marker;
+
   int err = pigeon_token_read(rec);
 
   if (err) {
