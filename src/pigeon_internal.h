@@ -101,6 +101,11 @@ const struct pigeon_mqtt_config *pigeon_active_mqtt_config(void);
 int pigeon_mqtt_register_psk(void);
 #endif
 
+#if defined(CONFIG_PIGEON_FOTA)
+/* Implemented by pigeon_fota.c: true while pigeon_fota_apply() runs. */
+bool pigeon_fota_download_running(void);
+#endif
+
 #if defined(CONFIG_PIGEON_CONNECTOR_NIDD)
 /* Implemented by pigeon_nidd.c; called by pigeon_init() because the PDP context can only be
  * configured before the attach. */

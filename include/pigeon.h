@@ -452,6 +452,11 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * that the bootloader will accept it, so convergence belongs to whichever
  * image comes up and finds its own version matching the target.
  *
+ * Under CONFIG_PIGEON_TOKEN_ROTATION, returns -EBUSY without touching flash
+ * or the network while a newly received token awaits its proof: an unproven
+ * token can be refused mid-download. The proof runs before the next
+ * pigeon_shadow_get(), so a later call goes ahead.
+ *
  * Not safe to call concurrently with itself. Individual chunks are
  * retried in place rather than ending the transfer, and an HTTP 429 is
  * waited out on the server's own Retry-After rather than counted as a

@@ -26,6 +26,7 @@
 #if defined(CONFIG_PIGEON_FOTA_RESUME)
 #include "pigeon_fota_resume.h"
 #endif
+#include "pigeon_token.h"
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
@@ -73,6 +74,9 @@ BUILD_ASSERT(
  * value worth tuning per fleet, and the first step only decides how quickly
  * a transfer reacts to a link that dropped for a moment. */
 #define PIGEON_FOTA_RETRY_BACKOFF_BASE_SEC 2
+
+/* Read by the token check's download gate from the polling thread. */
+static atomic_t pigeon_fota_downloading;
 
 /* Network receive target for each chunk, handed to the active backend
  * (dfu_target_write() or flash_img_buffered_write()) once a full chunk has
@@ -240,7 +244,7 @@ static int pigeon_fota_check_geometry(const struct pigeon_fota_info *info) {
   return 0;
 }
 
-int pigeon_fota_apply(const struct pigeon_fota_info *info) {
+static int pigeon_fota_apply_run(const struct pigeon_fota_info *info) {
   if (!info || info->size <= 0) {
     return -EINVAL;
   }
@@ -711,6 +715,30 @@ int pigeon_fota_apply(const struct pigeon_fota_info *info) {
   LOG_INF("FOTA: image staged and scheduled for test-swap; ready for graceful reboot");
 
   return 0;
+}
+
+bool pigeon_fota_download_running(void) { return atomic_get(&pigeon_fota_downloading) != 0; }
+
+int pigeon_fota_apply(const struct pigeon_fota_info *info) {
+  /* An unproven token can be refused, and a refused chunk costs this attempt; its proof runs
+   * before the next shadow GET. Both sides read under the transport lock, so a token check
+   * either finished before this point or sees the download. */
+  (void)pigeon_transport_lock(K_FOREVER);
+  atomic_set(&pigeon_fota_downloading, 1);
+  bool pending = pigeon_token_pending();
+  pigeon_transport_unlock();
+
+  if (pending) {
+    atomic_set(&pigeon_fota_downloading, 0);
+    LOG_WRN("FOTA: held off while a new device token awaits its proof");
+    return -EBUSY;
+  }
+
+  int err = pigeon_fota_apply_run(info);
+
+  atomic_set(&pigeon_fota_downloading, 0);
+
+  return err;
 }
 
 int pigeon_fota_confirm_boot(void) {
