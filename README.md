@@ -314,11 +314,17 @@ ones worth knowing before reading it:
   PDN.
 - `CONFIG_PIGEON_TOKEN_ROTATION` (HTTPS, needs a settings backend, `default n`)
   — lets the platform replace the token without a reflash. The device keeps
-  the token it rotated to in the settings record `pigeon/token`, outside both
-  image slots, and `CONFIG_PIGEON_TOKEN` becomes the first-boot value. Once a
-  device has rotated, an image built without the option, or a reflash that
-  erases the settings partition, holds only a retired token. The build
-  refuses HTTP client debug logging and shells that can reach the record.
+  the token it rotated to in its pigeon's own settings record,
+  `pigeon/token/<first 16 characters of the pigeon id>`, outside both image
+  slots, and `CONFIG_PIGEON_TOKEN` becomes the first-boot value. The record
+  binds to the pigeon id at the end of `CONFIG_PIGEON_ENDPOINT`, not to the
+  host. Once a device has rotated, an image built without the option, or a
+  reflash that erases the settings partition, holds only a retired token.
+  No rotation starts while the shadow assigns firmware the device is not
+  running. Every such image carries the string `pigeon-token-rotation/1`,
+  from which the platform tags an uploaded image as rotation-capable. The
+  build refuses HTTP client debug logging, mbedTLS debug at level 3 or
+  above, the MCUmgr settings group, and shells that can reach the record.
 - Optional features, all `default n` unless noted:
   `CONFIG_PIGEON_WS` (a persistent push channel alongside HTTPS),
   `CONFIG_PIGEON_TELEMETRY_BATCH`, `CONFIG_PIGEON_FOTA` (with
