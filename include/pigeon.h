@@ -341,9 +341,13 @@ int pigeon_shadow_flush(void);
  * GET, once per boot and every 24 h, it asks POST <endpoint>/token whether
  * rotation is due. That adds a request a day, and up to two more on the day
  * a token rotates. None of it changes the return value. A check is deferred
- * while the running image is unconfirmed, a download runs or an update is
- * staged, so an application that confirms its image only after some later
- * success still rotates at the next poll after confirming.
+ * while the running image is unconfirmed, a download runs, an update is
+ * staged, or (with CONFIG_PIGEON_FOTA) the target's "firmware" object names
+ * a version other than CONFIG_PIGEON_FOTA_CURRENT_VERSION, so an application
+ * that confirms its image only after some later success still rotates at the
+ * next poll after confirming, and an image about to be installed is never
+ * left holding only a token the rotation retired. That "firmware" check is
+ * the one place the library reads target_config.
  *
  * On CONFIG_PIGEON_CONNECTOR_MQTT nothing is fetched: the broker publishes
  * the pigeon's target shadow as a retained message and this call serves

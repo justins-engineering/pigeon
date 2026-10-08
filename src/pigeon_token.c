@@ -248,6 +248,35 @@ int pigeon_token_settings_key(const char *endpoint, char *out, size_t cap) {
   return 0;
 }
 
+struct pigeon_token_firmware {
+  char version[PIGEON_FOTA_VERSION_MAX];
+};
+
+struct pigeon_token_target {
+  struct pigeon_token_firmware firmware;
+};
+
+static const struct json_obj_descr pigeon_token_firmware_descr[] = {
+    JSON_OBJ_DESCR_PRIM(struct pigeon_token_firmware, version, JSON_TOK_STRING_BUF),
+};
+
+static const struct json_obj_descr pigeon_token_target_descr[] = {
+    JSON_OBJ_DESCR_OBJECT(struct pigeon_token_target, firmware, pigeon_token_firmware_descr),
+};
+
+bool pigeon_token_firmware_assigned(char *config, size_t len, const char *running) {
+  struct pigeon_token_target target = {0};
+  int64_t decoded = json_obj_parse(
+      config, len, pigeon_token_target_descr, ARRAY_SIZE(pigeon_token_target_descr), &target
+  );
+
+  if (decoded < 0 || !(decoded & BIT(0)) || target.firmware.version[0] == '\0') {
+    return false;
+  }
+
+  return strcmp(target.firmware.version, running) != 0;
+}
+
 const char *pigeon_token_choose(
     const struct pigeon_token_record *rec, const char *endpoint, const char *baked
 ) {
@@ -479,6 +508,9 @@ static void pigeon_token_log_gate(enum pigeon_token_gate gate) {
       break;
     case PIGEON_TOKEN_GATE_SWAP_PENDING:
       LOG_WRN("Token: check deferred: an update is staged for the next boot");
+      break;
+    case PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED:
+      LOG_WRN("Token: check deferred: the shadow assigns firmware this image is not running");
       break;
     default:
       break;

@@ -431,6 +431,7 @@ ZTEST(token, test_gates_hold_the_check_without_using_it_up) {
       PIGEON_TOKEN_GATE_UNCONFIRMED,
       PIGEON_TOKEN_GATE_DOWNLOADING,
       PIGEON_TOKEN_GATE_SWAP_PENDING,
+      PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED,
   };
 
   srv.due = true;
@@ -444,6 +445,25 @@ ZTEST(token, test_gates_hold_the_check_without_using_it_up) {
   zassert_true(cycle(5000));
   zassert_equal(srv.calls, 2, "the next poll runs the deferred check");
   zassert_equal(srv.promotions, 1);
+}
+
+static bool assigned(const char *config) {
+  char buf[256];
+  size_t len = strlen(config);
+
+  memcpy(buf, config, len + 1);
+  return pigeon_token_firmware_assigned(buf, len, "1.2.0");
+}
+
+ZTEST(token, test_a_firmware_target_not_yet_running_holds_the_check) {
+  zassert_true(assigned("{\"log\":true,\"firmware\":{\"version\":\"1.3.0\",\"size\":4096,"
+                        "\"sha256\":\"ab\"},\"firmware_repush\":2}"));
+  zassert_false(assigned("{\"firmware\":{\"version\":\"1.2.0\",\"size\":4096}}"),
+                "the target is what runs");
+  zassert_false(assigned("{\"log\":true,\"telemetry_interval\":60}"), "no firmware key");
+  zassert_false(assigned("{\"firmware\":{\"version\":\"\"}}"), "an empty version");
+  zassert_false(assigned("{}"));
+  zassert_false(assigned("not json"), "the application cannot read it either");
 }
 
 ZTEST(token, test_gates_are_open_without_mcuboot) {

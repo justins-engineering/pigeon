@@ -54,6 +54,8 @@ enum pigeon_token_gate {
   PIGEON_TOKEN_GATE_DOWNLOADING,
   /* The staged image carries only its baked token. */
   PIGEON_TOKEN_GATE_SWAP_PENDING,
+  /* The shadow assigns another image, which may hold only its baked token. */
+  PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED,
 };
 
 /*
@@ -134,6 +136,13 @@ bool pigeon_token_same_pigeon(const char *a, const char *b);
  * last path segment, or one a settings name cannot carry; -ENOSPC when out is too small.
  */
 int pigeon_token_settings_key(const char *endpoint, char *out, size_t cap);
+
+/*
+ * Whether a shadow target_config assigns firmware whose version is not running: a "firmware"
+ * object with a non-empty "version" other than running. Parses config in place, consuming it.
+ * A config that does not parse assigns nothing, since the application cannot read it either.
+ */
+bool pigeon_token_firmware_assigned(char *config, size_t len, const char *running);
 
 /* D19 step 3 as a pure choice over a loaded record. */
 const char *pigeon_token_choose(

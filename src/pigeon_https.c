@@ -477,6 +477,28 @@ static int pigeon_https_token_request(
 
   return *status == 0 ? -EIO : 0;
 }
+
+/* D18, plus a firmware target this image is not running: until the update's outcome is known,
+ * the image that comes next may hold only its baked token, which a rotation would retire. A
+ * resumed download needs the same target in the shadow, so this covers it too. */
+static enum pigeon_token_gate pigeon_https_token_gate(void) {
+  enum pigeon_token_gate gate = pigeon_token_gate_now();
+
+#if defined(CONFIG_PIGEON_FOTA)
+  if (gate == PIGEON_TOKEN_GATE_OPEN) {
+    /* The parse consumes its buffer, and the caller still reads the wire copy. */
+    char config[PIGEON_HTTPS_CONFIG_MAX];
+    size_t len = strlen(pigeon_shadow_wire.target_config);
+
+    memcpy(config, pigeon_shadow_wire.target_config, len + 1);
+    if (pigeon_token_firmware_assigned(config, len, CONFIG_PIGEON_FOTA_CURRENT_VERSION)) {
+      gate = PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED;
+    }
+  }
+#endif
+
+  return gate;
+}
 #endif /* CONFIG_PIGEON_TOKEN_ROTATION */
 
 int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
@@ -496,7 +518,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
 #if defined(CONFIG_PIGEON_TOKEN_ROTATION)
   /* Never changes err: a failed check must not read as a failed poll. */
   if (err == 0) {
-    pigeon_token_check(pigeon_https_token_request, pigeon_token_gate_now, k_uptime_get());
+    pigeon_token_check(pigeon_https_token_request, pigeon_https_token_gate, k_uptime_get());
   }
 #endif
 
