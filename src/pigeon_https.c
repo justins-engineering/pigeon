@@ -10,6 +10,7 @@
 #include <zephyr/net/tls_credentials.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_token.h"
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
@@ -336,10 +337,12 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
   /* dovecote's get_shadow_device() does auth_header.strip_prefix("Bearer
-   * ") -- CONFIG_PIGEON_TOKEN is the raw opaque bearer credential (not a
-   * JWT), so the prefix is added here, not stored in the token itself (a
-   * bare token with no prefix produces a 401 here). */
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+   * ") -- the token is the raw opaque bearer credential (not a JWT), so the
+   * prefix is added here, not stored in the token itself (a bare token with
+   * no prefix produces a 401 here). */
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
   const char *headers[] = {auth_header, NULL};
 
   pigeon_https_body_len = 0;
@@ -398,6 +401,84 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   return 0;
 }
 
+#if defined(CONFIG_PIGEON_TOKEN_ROTATION)
+struct pigeon_https_token_ctx {
+  char *dst;
+  size_t cap;
+  size_t len;
+};
+
+static int pigeon_https_token_response_cb(
+    struct http_response *rsp, enum http_final_call final_data, void *user_data
+) {
+  ARG_UNUSED(final_data);
+  struct pigeon_https_token_ctx *ctx = user_data;
+
+  if (rsp->body_frag_start && rsp->body_frag_len && ctx->len + 1 < ctx->cap) {
+    size_t n = MIN(rsp->body_frag_len, ctx->cap - 1 - ctx->len);
+
+    memcpy(ctx->dst + ctx->len, rsp->body_frag_start, n);
+    ctx->len += n;
+    ctx->dst[ctx->len] = '\0';
+  }
+
+  return 0;
+}
+
+/* POST <endpoint>/token with an empty body. The reply has its own buffer, so the shadow just
+ * handed to the caller stays intact. */
+static int pigeon_https_token_request(
+    const char *token, char *body, size_t body_cap, uint16_t *status
+) {
+  int err = pigeon_https_parse_endpoint();
+
+  if (err) {
+    return err;
+  }
+
+  int sock = pigeon_https_connect();
+
+  if (sock < 0) {
+    return sock;
+  }
+
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/token")];
+
+  snprintk(url, sizeof(url), "%s/token", pigeon_https_path);
+
+  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
+
+  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", token);
+  const char *headers[] = {auth_header, "Content-Length: 0\r\n", NULL};
+
+  struct pigeon_https_token_ctx ctx = {.dst = body, .cap = body_cap, .len = 0};
+
+  body[0] = '\0';
+
+  struct http_request req = {
+      .method = HTTP_POST,
+      .url = url,
+      .host = pigeon_https_host,
+      .protocol = "HTTP/1.1",
+      .header_fields = headers,
+      .response = pigeon_https_token_response_cb,
+      .recv_buf = pigeon_https_recv_buf,
+      .recv_buf_len = sizeof(pigeon_https_recv_buf),
+  };
+
+  err = http_client_req(sock, &req, 10000, &ctx);
+  zsock_close(sock);
+
+  if (err < 0) {
+    return err;
+  }
+
+  *status = req.internal.response.http_status_code;
+
+  return *status == 0 ? -EIO : 0;
+}
+#endif /* CONFIG_PIGEON_TOKEN_ROTATION */
+
 int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   if (!out) {
     return -EINVAL;
@@ -405,7 +486,19 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
 
   (void)pigeon_transport_lock(K_FOREVER);
 
+#if defined(CONFIG_PIGEON_TOKEN_ROTATION)
+  /* Before the GET: a token proven here is the one the GET must present. */
+  pigeon_token_prove(pigeon_https_token_request);
+#endif
+
   int err = pigeon_shadow_get_locked(out);
+
+#if defined(CONFIG_PIGEON_TOKEN_ROTATION)
+  /* Never changes err: a failed check must not read as a failed poll. */
+  if (err == 0) {
+    pigeon_token_check(pigeon_https_token_request, pigeon_token_gate_now, k_uptime_get());
+  }
+#endif
 
   pigeon_transport_unlock();
 
@@ -520,7 +613,9 @@ static int pigeon_transport_report_telemetry_locked(
 
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
   const char *headers[] = {auth_header, NULL};
 
   pigeon_https_body_len = 0;
@@ -637,7 +732,9 @@ static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) 
 
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
   const char *headers[] = {auth_header, NULL};
 
   pigeon_https_body_len = 0;
@@ -718,7 +815,9 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
 
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
   const char *headers[] = {auth_header, NULL};
 
   /* current_config is embedded verbatim as a raw JSON object -- not a
@@ -845,7 +944,9 @@ static int pigeon_transport_download_firmware_locked(
 
   char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
 
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
 
   /* Inclusive end byte, per RFC 7233 -- buf_len is always > 0 here (the
    * public wrapper rejects zero), so offset + buf_len - 1 never underflows. */

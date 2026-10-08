@@ -931,6 +931,38 @@ config PIGEON_FOTA_CURRENT_VERSION
 
 endif # PIGEON_FOTA
 
+config PIGEON_TOKEN_ROTATION
+  bool "Remote device token rotation"
+  default n
+  depends on PIGEON_CONNECTOR_HTTPS
+  help
+    Lets the platform replace this device's bearer token without a reflash.
+    Once per boot, and every 24 h of uptime, pigeon_shadow_get() asks
+    POST <CONFIG_PIGEON_ENDPOINT>/token whether rotation is due. When it is,
+    the reply carries a new token, which is saved to the settings record
+    "pigeon/token", read back, and then proven on the same route; only that
+    proof retires the old token on the server, so a reset or a lost reply at
+    any step leaves the device holding a token the server accepts.
+    CONFIG_PIGEON_TOKEN stays required and becomes the first-boot value.
+
+    The record lives in the settings partition, outside both image slots, so
+    any later image built with this option reads it. Once a device has
+    rotated, an image built without it, or a full-erase reflash, holds only
+    the retired baked token.
+
+    No check runs while the running image is unconfirmed, a firmware download
+    is running, or an update is staged for the next boot, and no download
+    starts while a new token awaits its proof. Without MCUboot there is
+    nothing to revert, stage or download, and none of these apply.
+
+    The build refuses to go ahead without a settings backend (CONFIG_SETTINGS
+    and, for example, CONFIG_SETTINGS_NVS) rather than silently dropping the
+    option: an image that claims rotation but cannot keep a rotated token is
+    a lockout image once its pigeon has rotated. It also refuses HTTP client
+    debug logging, which logs the Authorization header, and
+    CONFIG_PIGEON_SHELL_ALLOW_ALL, CONFIG_SETTINGS_SHELL or CONFIG_FLASH_SHELL
+    beside CONFIG_PIGEON_SHELL, each of which reaches the stored token.
+
 config PIGEON_WS
   bool "WebSocket push channel (persistent connection to <endpoint>/ws)"
   default n
@@ -1416,7 +1448,11 @@ config PIGEON_TOKEN
     building the Authorization header. Returned once at provisioning (or
     re-minted, invalidating the previous token, via a token/refresh call);
     override this per build (e.g. via a board/app Kconfig fragment) rather
-    than committing a real token here. Read by the HTTPS connector (the
+    than committing a real token here. Under CONFIG_PIGEON_TOKEN_ROTATION
+    this is the first-boot value: the device then uses whatever token it
+    last rotated to, kept in settings, and falls back to this one only when
+    that record is empty, belongs to another endpoint, or holds a token
+    that expires before this one does. Read by the HTTPS connector (the
     Authorization header) and by CONFIG_PIGEON_MQTT_AUTH_CERT (the CONNECT
     password). A NIDD build reads it only for CONFIG_PIGEON_FOTA, whose
     image fetch is an HTTPS request over the IP PDN. The connectors that

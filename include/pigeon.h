@@ -28,7 +28,9 @@ enum pigeon_connector_type {
  * pigeon_coap.c/pigeon_https.c is compiled in), so there is never more than
  * one live endpoint/token pair to configure. On CoAP builds the token may
  * be empty: the PSK handshake authenticates the device, and requests carry
- * no in-band token.
+ * no in-band token. Under CONFIG_PIGEON_TOKEN_ROTATION, CONFIG_PIGEON_TOKEN is
+ * only the first-boot token; the library replaces it at the platform's
+ * request and keeps the current one in settings.
  */
 
 /*
@@ -333,6 +335,15 @@ int pigeon_shadow_flush(void);
  * target_config is the caller's job (this
  * library does not parse it, see pigeon_shadow_doc); call pigeon_shadow_report()
  * afterwards to confirm what was applied.
+ *
+ * Under CONFIG_PIGEON_TOKEN_ROTATION this call also carries token rotation:
+ * before the GET it proves a token received earlier, and after a successful
+ * GET, once per boot and every 24 h, it asks POST <endpoint>/token whether
+ * rotation is due. That adds a request a day, and up to two more on the day
+ * a token rotates. None of it changes the return value. A check is deferred
+ * while the running image is unconfirmed, a download runs or an update is
+ * staged, so an application that confirms its image only after some later
+ * success still rotates at the next poll after confirming.
  *
  * On CONFIG_PIGEON_CONNECTOR_MQTT nothing is fetched: the broker publishes
  * the pigeon's target shadow as a retained message and this call serves

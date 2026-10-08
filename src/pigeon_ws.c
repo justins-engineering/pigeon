@@ -31,6 +31,7 @@
 #include <zephyr/sys/printk.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_token.h"
 
 #if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
 #include "pigeon_telemetry_batch.h"
@@ -437,6 +438,13 @@ static int pigeon_ws_connect_once(void) {
 
   int sock = pigeon_ws_open_tls_socket();
 
+  /* Under the lock: the token record changes only under it. */
+  static char auth_header[PIGEON_WS_AUTH_HEADER_MAX];
+
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
+
   pigeon_transport_unlock();
 
   if (sock < 0) {
@@ -447,9 +455,6 @@ static int pigeon_ws_connect_once(void) {
 
   snprintk(url, sizeof(url), "%s/ws", pigeon_ws_path);
 
-  static char auth_header[PIGEON_WS_AUTH_HEADER_MAX];
-
-  snprintk(auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", CONFIG_PIGEON_TOKEN);
   const char *headers[] = {auth_header, NULL};
 
   struct websocket_request req = {0};

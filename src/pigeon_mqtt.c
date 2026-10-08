@@ -46,6 +46,7 @@
 #include <zephyr/sys/util.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_token.h"
 #include "pigeon_mqtt_policy.h"
 #include "pigeon_psk.h"
 
@@ -600,8 +601,8 @@ static int pigeon_mqtt_connect_once(void) {
   /* The bearer token is the CONNECT password. On a PSK session it is not
    * sent at all: the broker resolves this pigeon's token server-side from
    * the handshake identity, so there is nothing to put here. */
-  password.utf8 = (const uint8_t *)CONFIG_PIGEON_TOKEN;
-  password.size = strlen(CONFIG_PIGEON_TOKEN);
+  password.utf8 = (const uint8_t *)pigeon_token_current();
+  password.size = strlen((const char *)password.utf8);
   pigeon_mqtt_client.password = &password;
 #else
   (void)password;
