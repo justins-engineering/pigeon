@@ -34,6 +34,21 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 #define PIGEON_COAP_UDP_TKL 8
 
+/* A full block of the shadow GET and its options must fit one DTLS record. A native client offers
+ * records of at most CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH (RFC 6066), so a block that size
+ * cannot arrive; the nRF9160 modem takes about 1 KB of datagram, not yet seen above 512-byte
+ * blocks. */
+#if !defined(CONFIG_NRF_MODEM_LIB) && defined(CONFIG_NET_SOCKETS_TLS_SET_MAX_FRAGMENT_LENGTH) && \
+    defined(CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH)
+BUILD_ASSERT(
+    CONFIG_PIGEON_COAP_BLOCK2_SIZE < CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH,
+    "CONFIG_PIGEON_COAP_BLOCK2_SIZE must be below CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH"
+);
+#endif
+#if defined(CONFIG_NRF_MODEM_LIB) && CONFIG_PIGEON_COAP_BLOCK2_SIZE > 512
+#warning "CONFIG_PIGEON_COAP_BLOCK2_SIZE above 512 is unproven on the nRF9160 modem's datagram"
+#endif
+
 #define PIGEON_COAP_UDP_HS_SEC CONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC
 
 BUILD_ASSERT(

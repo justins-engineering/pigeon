@@ -41,6 +41,10 @@ try refused https-endpoint "$scheme" '-DCONFIG_PIGEON_ENDPOINT="https://example.
 try refused tcp-endpoint "$scheme" '-DCONFIG_PIGEON_ENDPOINT="coaps+tcp://example.invalid/p/1"'
 try refused no-scheme "$scheme" '-DCONFIG_PIGEON_ENDPOINT="example.invalid/p/1"'
 try builds empty-endpoint - '-DCONFIG_PIGEON_ENDPOINT=""'
+try refused block-1024 "must be below CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH" \
+  -DCONFIG_PIGEON_COAP_BLOCK2_SIZE=1024
+try builds block-1024-records-2048 - -DCONFIG_PIGEON_COAP_BLOCK2_SIZE=1024 \
+  -DCONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH=2048
 try refused tcp-build "must start with coaps+tcp://" -DCONFIG_PIGEON_COAP_TRANSPORT_TCP=y
 try builds tcp-build-tcp-endpoint - -DCONFIG_PIGEON_COAP_TRANSPORT_TCP=y \
   '-DCONFIG_PIGEON_ENDPOINT="coaps+tcp://example.invalid/p/1"'

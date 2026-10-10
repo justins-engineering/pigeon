@@ -217,6 +217,12 @@ config PIGEON_COAP_BLOCK2_SIZE
     follows; it never answers in larger ones. 512 is what loft's runbook
     sets for an nRF9160 fleet, and the log upload's block size. Each block
     is one more round trip, and on loft one more request to the platform.
+    The response buffer holds one block and its options, so it also sets
+    the largest answer the connector takes. On native sockets it must be
+    below CONFIG_NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH (1024 by default),
+    the record size the client offers, which the build checks; on the
+    nRF9160 a size above 512 builds with a warning until the bench shows
+    the modem carries it.
 
 endif # PIGEON_COAP_TRANSPORT_UDP
 
