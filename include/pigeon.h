@@ -377,8 +377,11 @@ int pigeon_shadow_flush(void);
  * Over DTLS/UDP the shadow arrives in blocks of at most
  * CONFIG_PIGEON_COAP_BLOCK2_SIZE, one exchange each: -EAGAIN means it changed
  * between two of them (another call reads the new one), -EBADMSG also means a
- * block went missing or came back short, and -EMSGSIZE also means the whole
- * document is larger than the config cap allows.
+ * block went missing or came back short, or the terminator answered in blocks
+ * smaller than CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE, -ETIMEDOUT also means the
+ * blocks took longer than CONFIG_PIGEON_COAP_SHADOW_GET_BUDGET_SEC, and
+ * -EMSGSIZE also means the whole document is larger than the config cap
+ * allows.
  *
  * target_config/current_config point into a static buffer owned by the
  * connector compiled in: valid only until the next call. On NIDD,

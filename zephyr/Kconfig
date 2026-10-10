@@ -293,6 +293,33 @@ config PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC
     CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC. At most that value, which the
     build checks.
 
+config PIGEON_COAP_SHADOW_GET_BUDGET_SEC
+  int "Time a block-wise shadow GET may go on asking for blocks (seconds)"
+  default 60
+  range 1 3600
+  help
+    The shadow GET holds the transport lock across every block it asks
+    for, each exchange may take Zephyr's MAX_TRANSMIT_WAIT (93 s at its
+    defaults), and the number of blocks is the terminator's choice, so
+    without a bound one GET could hold the lock for many minutes while
+    every other caller waits. Checked before each block after the first,
+    as the log upload checks its own budget, so the real bound is this
+    plus one exchange. A GET that runs out returns -ETIMEDOUT and the next
+    one starts again at block 0. A healthy board-sized shadow takes a few
+    round trips.
+
+config PIGEON_COAP_BLOCK2_MIN_SIZE
+  int "Smallest block the shadow GET follows (bytes)"
+  default 128
+  range 16 1024
+  help
+    A terminator may answer the shadow GET in smaller blocks than it asked
+    for, and each block is one more exchange under the transport lock and,
+    on loft, one more request to the platform: at 16 bytes the largest
+    document at a 768-byte config cap is 128 of them. A block 0 below this
+    size is refused with -EBADMSG. A power of two, which the build checks,
+    and on DTLS/UDP at most CONFIG_PIGEON_COAP_BLOCK2_SIZE.
+
 endif # PIGEON_CONNECTOR_COAP
 
 # Also live on an MQTT, NIDD or CoAP build that carries FOTA: the image fetch

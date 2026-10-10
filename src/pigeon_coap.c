@@ -62,6 +62,18 @@ BUILD_ASSERT(
 #define PIGEON_COAP_BLOCK2_SZX ((uint32_t)LOG2(CONFIG_PIGEON_COAP_BLOCK2_SIZE) - 4U)
 #endif
 
+BUILD_ASSERT(
+    (CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE & (CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE - 1)) == 0,
+    "CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE must be 16, 32, 64, 128, 256, 512 or 1024"
+);
+#if defined(CONFIG_PIGEON_COAP_BLOCK2_SIZE)
+BUILD_ASSERT(
+    CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE <= CONFIG_PIGEON_COAP_BLOCK2_SIZE,
+    "CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE must not exceed CONFIG_PIGEON_COAP_BLOCK2_SIZE"
+);
+#endif
+#define PIGEON_COAP_BLOCK2_MIN_SZX ((uint32_t)LOG2(CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE) - 4U)
+
 /* RFC 7959 sec 2.2's Block option value: num << 4 | m << 3 | szx. */
 #define PIGEON_COAP_BLOCK_NUM(v) ((v) >> 4)
 #define PIGEON_COAP_BLOCK_MORE(v) (((v) & 0x08U) != 0)
@@ -429,6 +441,9 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   uint32_t szx = 0;
   uint32_t num = 0;
   size_t len = 0;
+  /* The terminator picks the block size and so the number of exchanges, all under the lock. */
+  int64_t deadline =
+      k_uptime_get() + (int64_t)CONFIG_PIGEON_COAP_SHADOW_GET_BUDGET_SEC * MSEC_PER_SEC;
 
 #if defined(CONFIG_PIGEON_COAP_BLOCK2_SIZE)
   /* Asked for on the first request, so the terminator never sends the whole document in one
@@ -438,6 +453,11 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
 #endif
 
   for (;;) {
+    if (num > 0 && k_uptime_get() >= deadline) {
+      LOG_WRN("Shadow GET abandoned at block %u: budget spent", num);
+      return -ETIMEDOUT;
+    }
+
     int err = pigeon_coap_exchange(COAP_METHOD_GET, "shadow", NULL, 0, &opts, &rsp);
 
     if (err) {
@@ -470,9 +490,10 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
     uint32_t got = PIGEON_COAP_BLOCK_SZX(rsp.block2);
 
     if (num == 0) {
-      /* A server may answer in smaller blocks than asked, never larger (RFC 7959 sec 2.4); 7 is
-       * RFC 8323's BERT, which this client does not offer. */
-      if (PIGEON_COAP_BLOCK_NUM(rsp.block2) != 0 || got == 7 ||
+      /* A server may answer in smaller blocks than asked, never larger (RFC 7959 sec 2.4), and
+       * below the floor the exchanges are not worth it; 7 is RFC 8323's BERT, which this client
+       * does not offer. */
+      if (PIGEON_COAP_BLOCK_NUM(rsp.block2) != 0 || got == 7 || got < PIGEON_COAP_BLOCK2_MIN_SZX ||
           (opts.has_block2 && got > PIGEON_COAP_BLOCK_SZX(opts.block2))) {
         LOG_ERR("Shadow GET answered with Block2 0x%x", rsp.block2);
         return -EBADMSG;

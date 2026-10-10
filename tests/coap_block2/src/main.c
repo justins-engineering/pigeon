@@ -481,3 +481,49 @@ ZTEST(coap_block2, test_a_refusal_mid_transfer_holds_like_any_other) {
   zassert_equal(pigeon_shadow_get(&out), -EACCES);
   zassert_equal(seen.calls, 2, "a held request must not reach the transport");
 }
+
+/* A terminator may shrink the blocks, but at 16 bytes the board's shadow is 68 exchanges under
+ * the transport lock. */
+ZTEST(coap_block2, test_blocks_below_the_floor_are_refused) {
+  struct pigeon_shadow_doc out;
+
+  serve_board(0);
+  zassert_equal(pigeon_shadow_get(&out), -EBADMSG);
+  zassert_equal(seen.calls, 1);
+}
+
+ZTEST(coap_block2, test_blocks_at_the_floor_are_followed) {
+  struct pigeon_shadow_doc out;
+
+  serve_board(3);
+  zassert_ok(pigeon_shadow_get(&out));
+  assert_board(&out);
+  zassert_equal(seen.calls, 9);
+}
+
+/* Each exchange well inside its own timeout, and still too slow together. */
+static int answer_slowly(int call, struct pigeon_coap_rsp *rsp) {
+  ARG_UNUSED(call);
+  ARG_UNUSED(rsp);
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_SHADOW_GET_BUDGET_SEC * 2 / 3));
+  return 0;
+}
+
+ZTEST(coap_block2, test_a_slow_transfer_ends_at_its_budget_and_the_next_starts_over) {
+  struct pigeon_shadow_doc out;
+  int64_t start = k_uptime_get();
+
+  serve_board(5);
+  server.tamper = answer_slowly;
+  zassert_equal(pigeon_shadow_get(&out), -ETIMEDOUT);
+  zassert_equal(seen.calls, 2, "block 2 must not be asked for once the budget is spent");
+  zassert_true(
+      k_uptime_get() - start < 2 * CONFIG_PIGEON_COAP_SHADOW_GET_BUDGET_SEC * MSEC_PER_SEC
+  );
+
+  server.tamper = NULL;
+  memset(&seen, 0, sizeof(seen));
+  zassert_ok(pigeon_shadow_get(&out));
+  assert_board(&out);
+  zassert_equal(seen.block2[0], BLOCK(0, 0, 5));
+}
