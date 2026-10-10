@@ -359,12 +359,18 @@ int pigeon_transport_report_telemetry(
 static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
   /* current_config is embedded verbatim as a raw JSON object -- not
    * quote-escaped, trusted to already be valid JSON (the caller's
-   * responsibility; see the matching note in pigeon_https.c). The margin
-   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). Static,
-   * like the transports' request buffers, and guarded by the same lock. */
-  static char body[PIGEON_COAP_CONFIG_MAX + 64];
+   * responsibility; see the matching note in pigeon_https.c). Static, like
+   * the transports' request buffers, and guarded by the same lock. */
+  static char body[PIGEON_COAP_REPORT_BODY_MAX];
 
-  snprintk(
+  /* The cap pigeon.h documents and PIGEON_COAP_REPORT_BODY_MAX is sized for. A cut body is not
+   * JSON: the platform would refuse it, and the same bytes again. */
+  if (strlen(current_config) >= CONFIG_PIGEON_SHADOW_CONFIG_MAX) {
+    LOG_ERR("Shadow report does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)");
+    return -EMSGSIZE;
+  }
+
+  int len = snprintk(
       body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,
       current_version
   );
@@ -373,7 +379,7 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
   const uint8_t *payload;
   size_t payload_len;
   int err = pigeon_coap_transport_exchange(
-      COAP_METHOD_POST, "shadow", (const uint8_t *)body, strlen(body), NULL, &rsp_code, &payload,
+      COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, NULL, &rsp_code, &payload,
       &payload_len
   );
 
@@ -390,6 +396,10 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
 }
 
 int pigeon_shadow_report(int32_t current_version, const char *current_config) {
+  if (!current_config) {
+    return -EINVAL;
+  }
+
   (void)pigeon_transport_lock(K_FOREVER);
 
   int err = pigeon_shadow_report_locked(current_version, current_config);

@@ -19,16 +19,21 @@
 #define PIGEON_COAP_HOST_MAX 128
 #define PIGEON_COAP_PATH_MAX 128
 #define PIGEON_COAP_PORT_MAX 6
-/* Request/response frame ceiling. The request side must fit a full batched
- * telemetry body (built and sized by pigeon_core.c -- see
- * PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h) plus CoAP framing: 384
+/* A shadow report body: current_config verbatim plus the fixed framing and an 11-character
+ * int32 (49 bytes), with the NUL. */
+#define PIGEON_COAP_REPORT_BODY_MAX (CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64)
+/* Request/response frame ceiling. The request side must fit the larger of a
+ * full telemetry body (built and sized by pigeon_core.c -- see
+ * PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h) and a shadow report, plus
+ * CoAP framing: 384
  * bytes of headroom comfortably covers the option caps above (Uri-Path
  * segments up to PIGEON_COAP_PATH_MAX, Content-Format, payload marker, and
  * either transport's message header). The 640 floor preserves response
  * headroom for shadow GETs even when CONFIG_PIGEON_TELEMETRY_MAX_KEYS is
  * configured tiny. Each transport keeps one static request and one static
  * response buffer of this size (~1.7KB each at the default 8 keys). */
-#define PIGEON_COAP_MSG_MAX MAX(640, PIGEON_TELEMETRY_BODY_MAX + 384)
+#define PIGEON_COAP_MSG_MAX \
+  MAX(640, MAX(PIGEON_TELEMETRY_BODY_MAX, PIGEON_COAP_REPORT_BODY_MAX) + 384)
 #define PIGEON_COAP_CONFIG_MAX 256
 
 #if defined(CONFIG_PIGEON_LOG_UPLOAD)

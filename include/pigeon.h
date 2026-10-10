@@ -391,6 +391,10 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
  * from target_version itself). current_config is a caller-owned raw JSON
  * object string, not parsed or validated by this library.
  *
+ * On CONFIG_PIGEON_CONNECTOR_COAP, -EMSGSIZE means current_config is
+ * CONFIG_PIGEON_SHADOW_CONFIG_MAX bytes or more, refused before anything is
+ * sent.
+ *
  * On CONFIG_PIGEON_CONNECTOR_NIDD this sends one SHADOW_REPORT frame and waits
  * up to CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC for the platform to confirm it.
  * -ETIMEDOUT means no confirmation came in time (a later one still counts) or
