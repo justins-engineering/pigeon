@@ -6,6 +6,9 @@
 #include <zephyr/net/coap.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
+#if defined(CONFIG_NRF_MODEM_LIB)
+#include <zephyr/net/socket_ncs.h>
+#endif
 
 #include "pigeon_coap_internal.h"
 #include "pigeon_coap_udp_match.h"
@@ -30,6 +33,43 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
    PIGEON_COAP_UDP_ACK_RANDOM_PERCENT / 100UL)
 
 #define PIGEON_COAP_UDP_TKL 8
+
+#define PIGEON_COAP_UDP_HS_SEC CONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC
+
+BUILD_ASSERT(
+    PIGEON_COAP_UDP_HS_SEC == 0 || PIGEON_COAP_UDP_HS_SEC == 1 || PIGEON_COAP_UDP_HS_SEC == 3 ||
+        PIGEON_COAP_UDP_HS_SEC == 7 || PIGEON_COAP_UDP_HS_SEC == 15 ||
+        PIGEON_COAP_UDP_HS_SEC == 31 || PIGEON_COAP_UDP_HS_SEC == 63 ||
+        PIGEON_COAP_UDP_HS_SEC == 123,
+    "CONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC must be 0, 1, 3, 7, 15, 31, 63 or 123"
+);
+
+#if PIGEON_COAP_UDP_HS_SEC > 0
+#if defined(CONFIG_NRF_MODEM_LIB)
+static int pigeon_coap_udp_bound_handshake(int sock) {
+  int timeo = PIGEON_COAP_UDP_HS_SEC;
+
+  return zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_HANDSHAKE_TIMEO, &timeo, sizeof(timeo));
+}
+#else
+/* mbedTLS doubles the retransmission interval from the floor and gives up once an interval at
+ * the ceiling expires: a 1 s floor and a ceiling of half the total spend the modem's 1 + 2 + 4
+ * ... seconds, and 123 ends on the modem's own 60 s interval. */
+static int pigeon_coap_udp_bound_handshake(int sock) {
+  uint32_t min_ms = MSEC_PER_SEC;
+  uint32_t max_ms =
+      (PIGEON_COAP_UDP_HS_SEC == 123 ? 60U : (PIGEON_COAP_UDP_HS_SEC + 1U) / 2U) * MSEC_PER_SEC;
+  int err =
+      zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_HANDSHAKE_TIMEOUT_MIN, &min_ms, sizeof(min_ms));
+
+  if (err) {
+    return err;
+  }
+
+  return zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_HANDSHAKE_TIMEOUT_MAX, &max_ms, sizeof(max_ms));
+}
+#endif
+#endif
 
 /* The DTLS session is long-lived, unlike the TCP transport's
  * connect-per-exchange: the handshake is paid once and every subsequent
@@ -122,6 +162,14 @@ static int pigeon_coap_udp_connect(void) {
     err = zsock_setsockopt(sock, SOL_TLS, TLS_DTLS_CID, &cid_val, sizeof(cid_val));
     if (err) {
       LOG_WRN("DTLS CID unsupported on this stack (%d); continuing without", -errno);
+    }
+#endif
+
+#if PIGEON_COAP_UDP_HS_SEC > 0
+    /* Not fatal: without the bound a handshake can still complete, and refusing to try would
+     * leave the device with no session at all. */
+    if (pigeon_coap_udp_bound_handshake(sock)) {
+      LOG_WRN("DTLS handshake timeout not accepted (%d); continuing without", -errno);
     }
 #endif
 

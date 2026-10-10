@@ -297,7 +297,9 @@ ones worth knowing before reading it:
 - `CONFIG_PIGEON_CONNECTOR_HTTPS` / `CONFIG_PIGEON_CONNECTOR_COAP` /
   `CONFIG_PIGEON_CONNECTOR_MQTT` / `CONFIG_PIGEON_CONNECTOR_NIDD` — mutually
   exclusive choice of transport. CoAP then chooses
-  `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or `_UDP`; MQTT chooses
+  `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or `_UDP`, whose DTLS
+  handshake gives up after `CONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC`
+  (31 s; the nRF91 modem has no bound of its own); MQTT chooses
   `CONFIG_PIGEON_MQTT_AUTH_CERT` or `_PSK`; NIDD needs
   `CONFIG_PIGEON_NIDD_CLAIM_KEY` and has `_DEDICATED_CID` (default y),
   `_RAI_IDLE_MS`, `_REPLY_WAIT_SEC`, `_SHADOW_WAIT_SEC` and

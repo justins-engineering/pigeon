@@ -189,6 +189,20 @@ config PIGEON_COAP_DTLS_CID
     doing RFC 6347 cookie exchange (2 without), ~650 bytes of handshake
     traffic with these PSK suites.
 
+config PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC
+  int "Time one DTLS handshake may take (seconds, 0 for the stack's own)"
+  default 31
+  range 0 123
+  help
+    The nRF91 modem never gives up on a DTLS handshake unless told to, and
+    the handshake runs under the transport lock every other call into this
+    library waits on, so a peer that stops answering mid-handshake would
+    hold that lock indefinitely. The modem accepts only 1, 3, 7, 15, 31, 63
+    and 123 (its retransmission schedule summed), and the build refuses any
+    other value. On native sockets the same total bounds mbedTLS's
+    retransmission of each handshake flight, and
+    CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT still bounds the whole connect.
+
 endif # PIGEON_COAP_TRANSPORT_UDP
 
 config PIGEON_COAP_TLS_PSK_IDENTITY
