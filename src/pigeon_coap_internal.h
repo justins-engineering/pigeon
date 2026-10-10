@@ -170,14 +170,19 @@ int pigeon_coap_append_request_options(
     const struct pigeon_coap_req_opts *opts
 );
 
+/* What a transport returns when the peer refused the handshake with a fatal alert. Not an errno,
+ * so no local failure on the way (a credential store answering -EACCES, say) can be read as the
+ * platform refusing this device. pigeon_coap.c answers the caller -EACCES for it. */
+#define PIGEON_COAP_HANDSHAKE_REFUSED (-0x7000)
+
 /*
  * Implemented by the compiled-in transport. Performs one full request/
  * response exchange: builds the transport's own framing around the shared
  * options (pigeon_coap_append_request_options() above), sends it, and
  * blocks for the response. On success (return 0), rsp holds the response
- * as pigeon_coap_read_body() reads it. -EACCES
- * means the peer refused the handshake outright (a fatal alert), which
- * pigeon_coap.c treats as a refusal of the credentials.
+ * as pigeon_coap_read_body() reads it. PIGEON_COAP_HANDSHAKE_REFUSED means
+ * the peer refused the handshake outright, which pigeon_coap.c treats as a
+ * refusal of the credentials.
  *
  * Callers hold the shared transport lock across this -- pigeon_coap.c's
  * public entry points do it for them. Both transports keep their session

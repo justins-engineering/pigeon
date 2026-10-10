@@ -342,11 +342,21 @@ ZTEST(coap_core, test_forbidden_holds_like_unauthorized) {
 }
 
 ZTEST(coap_core, test_refused_handshake_holds_like_unauthorized) {
-  answer.err = -EACCES;
+  answer.err = PIGEON_COAP_HANDSHAKE_REFUSED;
   zassert_equal(get(), -EACCES);
   answer_with(COAP_RESPONSE_CODE_CONTENT, NULL);
   zassert_equal(get(), -EACCES);
   zassert_equal(seen.calls, 1);
+}
+
+/* The modem's credential store answers -EACCES when it will not take a write: a fault on the
+ * device, not the platform refusing it. */
+ZTEST(coap_core, test_a_local_eacces_does_not_hold) {
+  answer.err = -EACCES;
+  zassert_equal(get(), -EACCES);
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+  zassert_ok(pigeon_shadow_report(1, "{}"));
+  zassert_equal(seen.calls, 2, "the next request must go out");
 }
 
 ZTEST(coap_core, test_hold_ends_after_the_backoff) {

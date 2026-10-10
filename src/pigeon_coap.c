@@ -373,8 +373,9 @@ static int pigeon_coap_exchange(
 
   int err = pigeon_coap_transport_exchange(code, leaf, payload, payload_len, opts, rsp);
 
-  if (err == -EACCES || (err == 0 && (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
-                                      rsp->code == COAP_RESPONSE_CODE_FORBIDDEN))) {
+  if (err == PIGEON_COAP_HANDSHAKE_REFUSED ||
+      (err == 0 && (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
+                    rsp->code == COAP_RESPONSE_CODE_FORBIDDEN))) {
     LOG_ERR(
         "Platform refused this device's credentials (%s); holding every CoAP request for %d s",
         err ? "handshake" : (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ? "4.01" : "4.03"),

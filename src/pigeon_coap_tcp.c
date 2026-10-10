@@ -106,14 +106,18 @@ static int pigeon_coap_tcp_connect(void) {
 
     err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
     if (err) {
-      LOG_WRN(
-          "Failed to connect to %s (family %d): %d, trying next address", pigeon_coap_host,
-          res->ai_family, -errno
-      );
       last_errno = errno;
-      refused |= (errno == ECONNABORTED);
+      LOG_WRN(
+          "Failed to connect to %s (family %d): %d", pigeon_coap_host, res->ai_family,
+          -last_errno
+      );
       zsock_close(sock);
       sock = -1;
+      /* Every address is the same terminator, which would refuse the next handshake too. */
+      if (last_errno == ECONNABORTED) {
+        refused = true;
+        break;
+      }
       continue;
     }
 
@@ -124,7 +128,7 @@ static int pigeon_coap_tcp_connect(void) {
 
   if (sock < 0) {
     LOG_ERR("Failed to connect to %s on every resolved address: %d", pigeon_coap_host, last_errno);
-    return refused ? -EACCES : -last_errno;
+    return refused ? PIGEON_COAP_HANDSHAKE_REFUSED : -last_errno;
   }
 
   return sock;

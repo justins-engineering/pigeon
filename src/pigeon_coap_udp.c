@@ -197,14 +197,18 @@ static int pigeon_coap_udp_connect(void) {
     /* Blocking DTLS handshake. */
     err = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
     if (err) {
-      LOG_WRN(
-          "DTLS handshake with %s (family %d) failed: %d, trying next address",
-          pigeon_coap_host, res->ai_family, -errno
-      );
       last_errno = errno;
-      refused |= (errno == ECONNABORTED);
+      LOG_WRN(
+          "DTLS handshake with %s (family %d) failed: %d", pigeon_coap_host, res->ai_family,
+          -last_errno
+      );
       zsock_close(sock);
       sock = -1;
+      /* Every address is the same terminator, which would refuse the next handshake too. */
+      if (last_errno == ECONNABORTED) {
+        refused = true;
+        break;
+      }
       continue;
     }
 
@@ -218,7 +222,7 @@ static int pigeon_coap_udp_connect(void) {
         "DTLS handshake with %s failed on every resolved address: %d", pigeon_coap_host,
         last_errno
     );
-    return refused ? -EACCES : -last_errno;
+    return refused ? PIGEON_COAP_HANDSHAKE_REFUSED : -last_errno;
   }
 
 #if defined(CONFIG_PIGEON_COAP_DTLS_CID)
