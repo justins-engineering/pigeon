@@ -360,8 +360,9 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
   /* current_config is embedded verbatim as a raw JSON object -- not
    * quote-escaped, trusted to already be valid JSON (the caller's
    * responsibility; see the matching note in pigeon_https.c). The margin
-   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). */
-  char body[PIGEON_COAP_CONFIG_MAX + 64];
+   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). Static,
+   * like the transports' request buffers, and guarded by the same lock. */
+  static char body[PIGEON_COAP_CONFIG_MAX + 64];
 
   snprintk(
       body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,

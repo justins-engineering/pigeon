@@ -26,9 +26,8 @@
  * segments up to PIGEON_COAP_PATH_MAX, Content-Format, payload marker, and
  * either transport's message header). The 640 floor preserves response
  * headroom for shadow GETs even when CONFIG_PIGEON_TELEMETRY_MAX_KEYS is
- * configured tiny. Note the transports' request buffers live on the
- * caller's stack, so this scales that stack cost with
- * CONFIG_PIGEON_TELEMETRY_MAX_KEYS (~1.7KB at the default 8). */
+ * configured tiny. Each transport keeps one static request and one static
+ * response buffer of this size (~1.7KB each at the default 8 keys). */
 #define PIGEON_COAP_MSG_MAX MAX(640, PIGEON_TELEMETRY_BODY_MAX + 384)
 #define PIGEON_COAP_CONFIG_MAX 256
 

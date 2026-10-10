@@ -84,6 +84,11 @@ static int pigeon_coap_udp_sock = -1;
  * exchange (same contract as the TCP transport's body buffer). */
 static uint8_t pigeon_coap_udp_rsp[PIGEON_COAP_MSG_MAX];
 
+/* Static rather than on the caller's stack: one caller is the log upload on the system
+ * workqueue, and the transport lock already serializes every exchange. Retransmissions resend
+ * from here, so it holds its bytes until the exchange ends. */
+static uint8_t pigeon_coap_udp_req[PIGEON_COAP_MSG_MAX];
+
 static void pigeon_coap_udp_close(void) {
   if (pigeon_coap_udp_sock >= 0) {
     zsock_close(pigeon_coap_udp_sock);
@@ -347,14 +352,13 @@ static int pigeon_coap_udp_do_exchange(
     const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
     size_t *rsp_payload_len
 ) {
-  uint8_t req_buf[PIGEON_COAP_MSG_MAX];
   struct coap_packet req;
   uint8_t *token = coap_next_token();
   uint16_t req_id = coap_next_id();
 
   int err = coap_packet_init(
-      &req, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON, PIGEON_COAP_UDP_TKL, token,
-      code, req_id
+      &req, pigeon_coap_udp_req, sizeof(pigeon_coap_udp_req), COAP_VERSION_1, COAP_TYPE_CON,
+      PIGEON_COAP_UDP_TKL, token, code, req_id
   );
 
   if (err) {

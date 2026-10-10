@@ -26,6 +26,10 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 static uint8_t pigeon_coap_tcp_body[PIGEON_COAP_MSG_MAX];
 static size_t pigeon_coap_tcp_body_len;
 
+/* Static rather than on the caller's stack, for the reason pigeon_coap_udp.c gives: the log
+ * upload runs on the system workqueue, and the transport lock serializes exchanges. */
+static uint8_t pigeon_coap_tcp_req[PIGEON_COAP_MSG_MAX];
+
 static int pigeon_coap_tcp_connect(void) {
   int err = pigeon_coap_register_psk();
 
@@ -471,12 +475,12 @@ int pigeon_coap_transport_exchange(
     return err;
   }
 
-  uint8_t req_buf[PIGEON_COAP_MSG_MAX];
   uint8_t *req_start;
   size_t req_len;
 
   err = pigeon_coap_tcp_build_request(
-      req_buf, sizeof(req_buf), code, leaf, payload, payload_len, opts, &req_start, &req_len
+      pigeon_coap_tcp_req, sizeof(pigeon_coap_tcp_req), code, leaf, payload, payload_len, opts,
+      &req_start, &req_len
   );
   if (err) {
     zsock_close(sock);
