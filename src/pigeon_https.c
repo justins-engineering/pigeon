@@ -452,9 +452,17 @@ static enum pigeon_token_gate pigeon_https_token_gate(void) {
 
 #if defined(CONFIG_PIGEON_FOTA)
   if (gate == PIGEON_TOKEN_GATE_OPEN) {
-    /* The parse consumes its buffer, and the caller still reads the wire copy. */
+    /* The parse consumes its buffer, and the caller still reads the wire copy, which is larger:
+     * the decode held its text under this size, and a config that somehow is not cannot be
+     * read, so it holds the gate as an assigned one would. */
     char config[PIGEON_HTTPS_CONFIG_MAX];
-    size_t len = strlen(pigeon_https_shadow.target_config);
+    const char *nul = memchr(pigeon_https_shadow.target_config, '\0', sizeof(config));
+
+    if (!nul) {
+      return PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED;
+    }
+
+    size_t len = (size_t)(nul - pigeon_https_shadow.target_config);
 
     memcpy(config, pigeon_https_shadow.target_config, len + 1);
     if (pigeon_token_firmware_assigned(config, len, CONFIG_PIGEON_FOTA_CURRENT_VERSION)) {
