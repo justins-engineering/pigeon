@@ -50,8 +50,11 @@ static bool pigeon_coap_psk_registered;
 static struct pigeon_shadow_wire pigeon_coap_shadow_wire;
 
 /* A block-wise shadow response, reassembled. No larger than the largest document the config cap
- * allows, so a terminator cannot make the device hold more. */
+ * allows, so a terminator cannot make the device hold more. Dead once the GET has decoded it into
+ * pigeon_coap_shadow_wire, so the shadow report builds its body here, under the same lock. */
 static uint8_t pigeon_coap_shadow_blocks[PIGEON_SHADOW_DOC_MAX];
+
+BUILD_ASSERT(PIGEON_SHADOW_DOC_MAX >= PIGEON_COAP_REPORT_BODY_MAX);
 
 #if defined(CONFIG_PIGEON_COAP_BLOCK2_SIZE)
 BUILD_ASSERT(
@@ -633,9 +636,8 @@ int pigeon_transport_report_telemetry(
 static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
   /* current_config is embedded verbatim as a raw JSON object -- not
    * quote-escaped, trusted to already be valid JSON (the caller's
-   * responsibility; see the matching note in pigeon_https.c). Static, like
-   * the transports' request buffers, and guarded by the same lock. */
-  static char body[PIGEON_COAP_REPORT_BODY_MAX];
+   * responsibility; see the matching note in pigeon_https.c). */
+  char *body = (char *)pigeon_coap_shadow_blocks;
 
   /* The cap pigeon.h documents and PIGEON_COAP_REPORT_BODY_MAX is sized for. A cut body is not
    * JSON: the platform would refuse it, and the same bytes again. */
@@ -646,8 +648,8 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
   }
 
   int len = snprintk(
-      body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,
-      current_version
+      body, PIGEON_COAP_REPORT_BODY_MAX, "{\"current_config\":%s,\"current_version\":%d}",
+      current_config, current_version
   );
 
   /* The answer echoes the whole shadow, as large as a GET's, and only its code is read. Asking

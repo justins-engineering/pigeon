@@ -223,3 +223,15 @@ ZTEST(coap_session, test_an_answer_over_the_buffer_is_refused_not_cut) {
   zassert_ok(pigeon_shadow_get(&out), "the next call starts a session of its own");
   zassert_str_equal(out.target_config, board_config);
 }
+
+/* The report builds its body where the GET reassembled its blocks; the shadow that GET handed out
+ * lives elsewhere and must survive it. */
+ZTEST(coap_session, test_a_report_leaves_the_last_shadow_intact) {
+  struct pigeon_shadow_doc out;
+
+  zassert_ok(pigeon_shadow_get(&out));
+  zassert_ok(pigeon_shadow_report(12, "{\"stop_id\":\"415\"}"));
+  zassert_equal(atomic_get(&requests), 4);
+  zassert_str_equal(out.target_config, board_config);
+  zassert_str_equal(out.current_config, board_config);
+}
