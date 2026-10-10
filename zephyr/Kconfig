@@ -203,6 +203,21 @@ config PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC
     retransmission of each handshake flight, and
     CONFIG_NET_SOCKETS_TLS_CONNECT_TIMEOUT still bounds the whole connect.
 
+config PIGEON_COAP_BLOCK2_SIZE
+  int "Block size the shadow GET asks for (bytes)"
+  default 512
+  range 16 1024
+  help
+    The shadow GET asks for its response in blocks of this size (RFC 7959
+    Block2) and reassembles them, so a shadow larger than one datagram
+    still arrives: the departure board's, with a firmware target, is about
+    1.1 KB, past the nRF9160 modem's 1 KB DTLS datagram. A power of two,
+    which the build checks. The terminator may answer in smaller blocks
+    (loft serves at most its LOFT_UDP_MAX_BLOCK_BYTES) and the device
+    follows; it never answers in larger ones. 512 is what loft's runbook
+    sets for an nRF9160 fleet, and the log upload's block size. Each block
+    is one more round trip, and on loft one more request to the platform.
+
 endif # PIGEON_COAP_TRANSPORT_UDP
 
 config PIGEON_COAP_TLS_PSK_IDENTITY

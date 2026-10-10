@@ -372,6 +372,11 @@ int pigeon_shadow_flush(void);
  * device's credentials or identity (a handshake refused with an alert, or a
  * 4.01 or 4.03 answer); every CoAP request, this one included, then returns
  * -EACCES without a radio access for CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC.
+ * Over DTLS/UDP the shadow arrives in blocks of at most
+ * CONFIG_PIGEON_COAP_BLOCK2_SIZE, one exchange each: -EAGAIN means it changed
+ * between two of them (another call reads the new one), -EBADMSG also means a
+ * block went missing or came back short, and -EMSGSIZE also means the whole
+ * document is larger than the config cap allows.
  *
  * target_config/current_config point into a static buffer owned by the
  * connector compiled in: valid only until the next call. On NIDD,

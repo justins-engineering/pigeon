@@ -248,8 +248,9 @@ static int pigeon_coap_tcp_build_request(
  * connection. An empty CSM (no options) advertises the spec defaults --
  * Max-Message-Size 1152, and no Block-Wise-Transfer capability. Both still
  * hold: the capability indication is about what this peer can be SENT, and
- * nothing here reassembles a block-wise response, every response this
- * transport reads being one frame. A request body split into Block1 blocks
+ * this transport never asks for Block2, so a shadow arrives in one frame (a
+ * server that splits it anyway is reassembled by pigeon_coap.c, BERT
+ * refused). A request body split into Block1 blocks
  * (CONFIG_PIGEON_LOG_UPLOAD) is the other direction and needs no capability
  * of ours; if anything it keeps this transport further inside the peer's own
  * 1152-byte default than sending a large body whole would. The peer's own

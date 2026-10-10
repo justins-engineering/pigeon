@@ -49,6 +49,24 @@ static bool pigeon_coap_psk_registered;
  * call, as pigeon.h documents. */
 static struct pigeon_shadow_wire pigeon_coap_shadow_wire;
 
+/* A block-wise shadow response, reassembled. No larger than the largest document the config cap
+ * allows, so a terminator cannot make the device hold more. */
+static uint8_t pigeon_coap_shadow_blocks[PIGEON_SHADOW_DOC_MAX];
+
+#if defined(CONFIG_PIGEON_COAP_BLOCK2_SIZE)
+BUILD_ASSERT(
+    (CONFIG_PIGEON_COAP_BLOCK2_SIZE & (CONFIG_PIGEON_COAP_BLOCK2_SIZE - 1)) == 0,
+    "CONFIG_PIGEON_COAP_BLOCK2_SIZE must be 16, 32, 64, 128, 256, 512 or 1024"
+);
+/* RFC 7959 sec 2.2: a block of 2^(szx + 4) bytes. */
+#define PIGEON_COAP_BLOCK2_SZX ((uint32_t)LOG2(CONFIG_PIGEON_COAP_BLOCK2_SIZE) - 4U)
+#endif
+
+/* RFC 7959 sec 2.2's Block option value: num << 4 | m << 3 | szx. */
+#define PIGEON_COAP_BLOCK_NUM(v) ((v) >> 4)
+#define PIGEON_COAP_BLOCK_MORE(v) (((v) & 0x08U) != 0)
+#define PIGEON_COAP_BLOCK_SZX(v) ((v) & 0x07U)
+
 int pigeon_coap_parse_endpoint(void) {
   if (pigeon_coap_endpoint_parsed) {
     return 0;
@@ -371,27 +389,124 @@ static int pigeon_coap_exchange(
 }
 
 static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
+  struct pigeon_coap_req_opts opts = {0};
   struct pigeon_coap_rsp rsp;
-  int err = pigeon_coap_exchange(COAP_METHOD_GET, "shadow", NULL, 0, NULL, &rsp);
+  /* What block 0 said, which every later block must agree with. */
+  uint8_t etag[PIGEON_COAP_ETAG_MAX];
+  uint8_t etag_len = 0;
+  bool has_size2 = false;
+  uint32_t size2 = 0;
+  uint32_t szx = 0;
+  uint32_t num = 0;
+  size_t len = 0;
 
-  if (err) {
-    return err;
+#if defined(CONFIG_PIGEON_COAP_BLOCK2_SIZE)
+  /* Asked for on the first request, so the terminator never sends the whole document in one
+   * datagram the link cannot carry. */
+  opts.has_block2 = true;
+  opts.block2 = PIGEON_COAP_BLOCK2_SZX;
+#endif
+
+  for (;;) {
+    int err = pigeon_coap_exchange(COAP_METHOD_GET, "shadow", NULL, 0, &opts, &rsp);
+
+    if (err) {
+      return err;
+    }
+
+    if ((rsp.code >> 5) != 2) {
+      LOG_ERR("Shadow GET returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
+      return -EIO;
+    }
+
+    if (!rsp.has_block2) {
+      if (num > 0) {
+        LOG_ERR("Shadow block %u came back without Block2", num);
+        return -EBADMSG;
+      }
+
+      if (!rsp.payload) {
+        LOG_ERR("Shadow GET returned no payload");
+        return -ENODATA;
+      }
+
+      /* The whole document in one response. It sits in the transport's static response buffer,
+       * which the next exchange overwrites anyway, so the parse may rewrite it. */
+      return pigeon_shadow_wire_decode(
+          (char *)rsp.payload, rsp.payload_len, &pigeon_coap_shadow_wire, out
+      );
+    }
+
+    uint32_t got = PIGEON_COAP_BLOCK_SZX(rsp.block2);
+
+    if (num == 0) {
+      /* A server may answer in smaller blocks than asked, never larger (RFC 7959 sec 2.4); 7 is
+       * RFC 8323's BERT, which this client does not offer. */
+      if (PIGEON_COAP_BLOCK_NUM(rsp.block2) != 0 || got == 7 ||
+          (opts.has_block2 && got > PIGEON_COAP_BLOCK_SZX(opts.block2))) {
+        LOG_ERR("Shadow GET answered with Block2 0x%x", rsp.block2);
+        return -EBADMSG;
+      }
+
+      szx = got;
+      etag_len = rsp.etag_len;
+      memcpy(etag, rsp.etag, etag_len);
+      has_size2 = rsp.has_size2;
+      size2 = rsp.size2;
+
+      if (has_size2 && size2 > sizeof(pigeon_coap_shadow_blocks)) {
+        LOG_ERR("Shadow of %u bytes does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)", size2);
+        return -EMSGSIZE;
+      }
+    } else if (PIGEON_COAP_BLOCK_NUM(rsp.block2) != num || got != szx) {
+      LOG_ERR("Shadow block %u answered with Block2 0x%x", num, rsp.block2);
+      return -EBADMSG;
+    } else if (rsp.etag_len != etag_len || memcmp(rsp.etag, etag, etag_len) != 0) {
+      LOG_WRN("Shadow changed between blocks");
+      return -EAGAIN;
+    }
+
+    size_t block_len = (size_t)1 << (szx + 4);
+
+    /* Every block but the last is full (RFC 7959 sec 2.2), so a short one lost bytes. */
+    if (rsp.payload_len > block_len ||
+        (PIGEON_COAP_BLOCK_MORE(rsp.block2) && rsp.payload_len != block_len)) {
+      LOG_ERR("Shadow block %u carries %u bytes", num, (unsigned)rsp.payload_len);
+      return -EBADMSG;
+    }
+
+    if (rsp.payload_len > sizeof(pigeon_coap_shadow_blocks) - len) {
+      LOG_ERR("Shadow does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)");
+      return -EMSGSIZE;
+    }
+
+    if (rsp.payload_len) {
+      memcpy(pigeon_coap_shadow_blocks + len, rsp.payload, rsp.payload_len);
+      len += rsp.payload_len;
+    }
+
+    if (!PIGEON_COAP_BLOCK_MORE(rsp.block2)) {
+      break;
+    }
+
+    num++;
+    opts.has_block2 = true;
+    opts.block2 = (num << 4) | szx;
   }
 
-  if ((rsp.code >> 5) != 2) {
-    LOG_ERR("Shadow GET returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
-    return -EIO;
+  /* Without an ETag, a document that changed length between blocks shows only here. */
+  if (has_size2 && len != size2) {
+    LOG_WRN("Shadow changed between blocks (%u of %u bytes)", (unsigned)len, size2);
+    return -EAGAIN;
   }
 
-  if (!rsp.payload) {
+  if (len == 0) {
     LOG_ERR("Shadow GET returned no payload");
     return -ENODATA;
   }
 
-  /* The payload sits in the transport's static response buffer, which the next exchange
-   * overwrites anyway, so the parse may rewrite it. */
   return pigeon_shadow_wire_decode(
-      (char *)rsp.payload, rsp.payload_len, &pigeon_coap_shadow_wire, out
+      (char *)pigeon_coap_shadow_blocks, len, &pigeon_coap_shadow_wire, out
   );
 }
 
