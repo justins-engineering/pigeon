@@ -785,7 +785,14 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
 }
 
 static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
-  int err = pigeon_https_parse_endpoint();
+  /* Before the body below, which would otherwise cut an oversized config mid-JSON. */
+  int err = pigeon_shadow_report_fits(current_config);
+
+  if (err) {
+    return err;
+  }
+
+  err = pigeon_https_parse_endpoint();
 
   if (err) {
     return err;

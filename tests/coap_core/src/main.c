@@ -206,6 +206,33 @@ static void make_escaped_config(char *out, size_t len, size_t escapes) {
   strcpy(out + n, "\"}");
 }
 
+/* Under the cap, and as escaped as a GET's buffer still holds: the report goes out. */
+ZTEST(coap_core, test_report_at_the_escape_limit_goes_out) {
+  static char config[CONFIG_MAX];
+  size_t escapes = PIGEON_SHADOW_CONFIG_WIRE_MAX - CONFIG_MAX;
+
+  escapes -= escapes % 2;
+  make_escaped_config(config, CONFIG_MAX - 1, escapes);
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+
+  zassert_ok(pigeon_shadow_report(7, config));
+  zassert_equal(seen.calls, 1);
+}
+
+/* Under the cap, but quote-dense: the platform would store it and send it back escaped past
+ * what every later GET can decode, so the device would never see another target. */
+ZTEST(coap_core, test_report_that_could_not_come_back_is_refused_and_not_sent) {
+  static char config[CONFIG_MAX];
+  size_t escapes = PIGEON_SHADOW_CONFIG_WIRE_MAX - CONFIG_MAX + 2;
+
+  escapes -= escapes % 2;
+  make_escaped_config(config, CONFIG_MAX - 1, escapes);
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+
+  zassert_equal(pigeon_shadow_report(7, config), -EMSGSIZE);
+  zassert_equal(seen.calls, 0, "a report the GET cannot decode must not reach the platform");
+}
+
 static char doc[2 * PIGEON_SHADOW_CONFIG_WIRE_MAX + 256];
 
 static void answer_shadow(const char *target, const char *current) {

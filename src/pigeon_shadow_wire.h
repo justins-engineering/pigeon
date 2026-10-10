@@ -43,6 +43,16 @@ extern const struct json_obj_descr pigeon_shadow_wire_descr[PIGEON_SHADOW_WIRE_F
 int pigeon_shadow_wire_doc(const struct pigeon_shadow_wire *wire, struct pigeon_shadow_doc *out);
 
 /*
+ * 0 when config can be reported, -EMSGSIZE when it is CONFIG_PIGEON_SHADOW_CONFIG_MAX bytes or
+ * more, or when escaped as the platform sends it back in every later shadow it would not fit a
+ * config buffer above: the platform stores a report it accepts, and from then on every GET would
+ * fail to decode, so the device would never see the target that lets it report a smaller one.
+ * Counts a control character as \u00XX, the longest escape, so it may refuse a config the
+ * platform would have shortened; it never accepts one that cannot come back.
+ */
+int pigeon_shadow_report_fits(const char *config);
+
+/*
  * Parses one whole document from json[0..len), which the parse rewrites, into wire, then
  * pigeon_shadow_wire_doc(). -EBADMSG when a field is missing; a parse failure returns the
  * parser's own negative code.

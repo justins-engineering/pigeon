@@ -33,6 +33,28 @@ int pigeon_shadow_wire_doc(const struct pigeon_shadow_wire *wire, struct pigeon_
   return 0;
 }
 
+int pigeon_shadow_report_fits(const char *config) {
+  size_t len = 0;
+  size_t escaped = 0;
+
+  for (const char *p = config; *p && len < CONFIG_PIGEON_SHADOW_CONFIG_MAX; p++) {
+    unsigned char c = (unsigned char)*p;
+
+    len++;
+    escaped += (c == '"' || c == '\\') ? 2 : (c < 0x20 ? 6 : 1);
+  }
+
+  if (len >= CONFIG_PIGEON_SHADOW_CONFIG_MAX || escaped >= PIGEON_SHADOW_CONFIG_WIRE_MAX) {
+    LOG_ERR(
+        "Shadow report (%u bytes, %u escaped) over CONFIG_PIGEON_SHADOW_CONFIG_MAX", (unsigned)len,
+        (unsigned)escaped
+    );
+    return -EMSGSIZE;
+  }
+
+  return 0;
+}
+
 int pigeon_shadow_wire_decode(
     char *json, size_t len, struct pigeon_shadow_wire *wire, struct pigeon_shadow_doc *out
 ) {

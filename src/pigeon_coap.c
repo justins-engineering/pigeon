@@ -618,9 +618,10 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
 
   /* The cap pigeon.h documents and PIGEON_COAP_REPORT_BODY_MAX is sized for. A cut body is not
    * JSON: the platform would refuse it, and the same bytes again. */
-  if (strlen(current_config) >= CONFIG_PIGEON_SHADOW_CONFIG_MAX) {
-    LOG_ERR("Shadow report does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)");
-    return -EMSGSIZE;
+  int err = pigeon_shadow_report_fits(current_config);
+
+  if (err) {
+    return err;
   }
 
   int len = snprintk(
@@ -637,7 +638,8 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
       .block2 = 0,
   };
   struct pigeon_coap_rsp rsp;
-  int err = pigeon_coap_exchange(
+
+  err = pigeon_coap_exchange(
       COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, &opts, &rsp
   );
 

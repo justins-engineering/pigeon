@@ -1101,9 +1101,8 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
    * same arithmetic pigeon_https.c uses. */
   static char body[PIGEON_HTTPS_CONFIG_MAX + 64];
 
-  /* The cap the cached shadow below is held to. */
-  if (strlen(current_config) >= CONFIG_PIGEON_SHADOW_CONFIG_MAX) {
-    LOG_ERR("Shadow report does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)");
+  /* The cap the cached shadow below is held to, and what the retained target can carry back. */
+  if (pigeon_shadow_report_fits(current_config)) {
     return -EMSGSIZE;
   }
 
