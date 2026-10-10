@@ -60,6 +60,16 @@ BUILD_ASSERT(
     "is an ordinary device-authenticated HTTPS request, even when the connector itself carries "
     "no token"
 );
+
+#if defined(CONFIG_PIGEON_CONNECTOR_COAP)
+/* The CoAP connector writes its PSK at its own tag, and a PSK beside a CA makes the nRF91 modem
+ * offer PSK suites on that tag's TLS sockets: every image fetch then fails to connect. */
+BUILD_ASSERT(
+    CONFIG_PIGEON_HTTPS_SEC_TAG != CONFIG_PIGEON_COAP_SEC_TAG,
+    "CONFIG_PIGEON_HTTPS_SEC_TAG must differ from CONFIG_PIGEON_COAP_SEC_TAG on a CoAP build "
+    "with FOTA: the firmware host's CA cannot share a tag with the connector's PSK"
+);
+#endif
 #endif
 
 /* This module's requests run under the shared transport lock

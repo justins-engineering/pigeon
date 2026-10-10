@@ -34,6 +34,9 @@ try() {
 try refused no-firmware-host "FOTA_HTTPS_ENDPOINT must name" \
   '-DCONFIG_PIGEON_FOTA_HTTPS_ENDPOINT=""'
 try refused no-token "PIGEON_TOKEN must be set for FOTA" '-DCONFIG_PIGEON_TOKEN=""'
+try refused shared-tag "HTTPS_SEC_TAG must differ" -DCONFIG_PIGEON_HTTPS_SEC_TAG=45
+try refused default-tags "HTTPS_SEC_TAG must differ" -DCONFIG_PIGEON_HTTPS_SEC_TAG=1 \
+  -DCONFIG_PIGEON_COAP_SEC_TAG=1
 try builds tcp-transport - -DCONFIG_PIGEON_COAP_TRANSPORT_TCP=y \
   '-DCONFIG_PIGEON_ENDPOINT="coaps+tcp://127.0.0.1:56842/device/pigeons/test"'
 

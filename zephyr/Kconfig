@@ -302,7 +302,10 @@ config PIGEON_HTTPS_SEC_TAG
     On a NIDD build with CONFIG_PIGEON_FOTA it is the tag for that same
     firmware host, reached over the IP PDN beside the Non-IP one. On a
     CoAP build with CONFIG_PIGEON_FOTA it is the firmware host's CA and
-    must differ from CONFIG_PIGEON_COAP_SEC_TAG.
+    must differ from CONFIG_PIGEON_COAP_SEC_TAG (a build error): a PSK
+    beside a CA makes the nRF91 modem offer PSK suites on that tag, and
+    the image fetch cannot connect. Both default to 1, so such a build
+    names at least one of them.
 
 config PIGEON_HTTPS_NATIVE_TLS
   bool "Run TLS natively (mbedTLS) over an offloaded transport socket"
