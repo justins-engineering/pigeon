@@ -30,10 +30,16 @@
  * to PIGEON_COAP_PATH_MAX, Content-Format, Block2, Block1, payload marker, and
  * either transport's message header). */
 #define PIGEON_COAP_REQ_MAX (MAX(PIGEON_TELEMETRY_BODY_MAX, PIGEON_COAP_REPORT_BODY_MAX) + 384)
-/* Response frame ceiling: a whole shadow document (pigeon_shadow_wire.h)
- * plus a message header, token and options, which every other response
- * here (an empty 2.xx, or a diagnostic payload) undercuts. */
+#if defined(CONFIG_PIGEON_COAP_TRANSPORT_UDP)
+/* Response datagram ceiling: one block of the size the shadow GET asks for, plus a message
+ * header, token and options. Every other answer here (an empty 2.xx, the report's 16-byte block,
+ * a diagnostic) undercuts it, and a larger one could not cross the nRF9160's datagram anyway. */
+#define PIGEON_COAP_RSP_MAX (CONFIG_PIGEON_COAP_BLOCK2_SIZE + 64)
+#else
+/* Response frame ceiling: a whole shadow document (pigeon_shadow_wire.h), which RFC 8323 sends
+ * in one frame since the TCP GET never asks for blocks, plus a header, token and options. */
 #define PIGEON_COAP_RSP_MAX (PIGEON_SHADOW_DOC_MAX + 64)
+#endif
 
 #if defined(CONFIG_PIGEON_LOG_UPLOAD)
 /* Block1 payload size for the log upload (RFC 7959 szx 5). Block-wise

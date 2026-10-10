@@ -381,7 +381,8 @@ int pigeon_shadow_flush(void);
  * smaller than CONFIG_PIGEON_COAP_BLOCK2_MIN_SIZE, -ETIMEDOUT also means the
  * blocks took longer than CONFIG_PIGEON_COAP_SHADOW_GET_BUDGET_SEC, and
  * -EMSGSIZE also means the whole document is larger than the config cap
- * allows.
+ * allows, or that one answer was larger than the block asked for (a server
+ * that ignores Block2 still works while the shadow fits one block).
  *
  * target_config/current_config point into a static buffer owned by the
  * connector compiled in: valid only until the next call. On NIDD,

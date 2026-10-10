@@ -81,8 +81,11 @@ static int pigeon_coap_udp_sock = -1;
 
 /* Response datagram storage. Payload pointers returned from
  * pigeon_coap_transport_exchange() alias into this, valid until the next
- * exchange (same contract as the TCP transport's body buffer). */
-static uint8_t pigeon_coap_udp_rsp[PIGEON_COAP_RSP_MAX];
+ * exchange (same contract as the TCP transport's body buffer). One byte over
+ * the ceiling, so a datagram that fills it is known to have been cut: a
+ * receive truncates silently, and a cut block would read as a short one, or
+ * a cut last block as a whole one. */
+static uint8_t pigeon_coap_udp_rsp[PIGEON_COAP_RSP_MAX + 1];
 
 /* Static rather than on the caller's stack: one caller is the log upload on the system
  * workqueue, and the transport lock already serializes every exchange. Retransmissions resend
@@ -314,6 +317,12 @@ static int pigeon_coap_udp_wait_one(
   }
   if (n == 0) {
     return -ECONNRESET;
+  }
+  if ((size_t)n == sizeof(pigeon_coap_udp_rsp)) {
+    LOG_ERR(
+        "CoAP response over %u bytes (see CONFIG_PIGEON_COAP_BLOCK2_SIZE)", PIGEON_COAP_RSP_MAX
+    );
+    return -EMSGSIZE;
   }
 
   struct coap_packet rsp;
