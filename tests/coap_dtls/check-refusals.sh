@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds this suite once beside each setting the CoAP DTLS connector must refuse at build time,
-# and once beside each neighbour it must not. Run from inside a west workspace:
+# Builds this suite once beside each setting the CoAP connector must refuse at build time, and
+# once beside each neighbour it must not. Run from inside a west workspace:
 #   check-refusals.sh <empty build root>
 set -u
 
@@ -35,5 +35,14 @@ try refused handshake-5s "HANDSHAKE_TIMEOUT_SEC must be" -DCONFIG_PIGEON_COAP_DT
 try builds handshake-7s - -DCONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC=7
 try builds handshake-123s - -DCONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC=123
 try builds handshake-off - -DCONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC=0
+
+scheme="must start with coaps://"
+try refused https-endpoint "$scheme" '-DCONFIG_PIGEON_ENDPOINT="https://example.invalid/p/1"'
+try refused tcp-endpoint "$scheme" '-DCONFIG_PIGEON_ENDPOINT="coaps+tcp://example.invalid/p/1"'
+try refused no-scheme "$scheme" '-DCONFIG_PIGEON_ENDPOINT="example.invalid/p/1"'
+try builds empty-endpoint - '-DCONFIG_PIGEON_ENDPOINT=""'
+try refused tcp-build "must start with coaps+tcp://" -DCONFIG_PIGEON_COAP_TRANSPORT_TCP=y
+try builds tcp-build-tcp-endpoint - -DCONFIG_PIGEON_COAP_TRANSPORT_TCP=y \
+  '-DCONFIG_PIGEON_ENDPOINT="coaps+tcp://example.invalid/p/1"'
 
 exit $status

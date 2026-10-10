@@ -1448,7 +1448,8 @@ config PIGEON_ENDPOINT
     CONFIG_PIGEON_CONNECTOR_COAP -- a coaps:// (RFC 7252 CoAP-over-
     DTLS/UDP, CONFIG_PIGEON_COAP_TRANSPORT_UDP) or coaps+tcp:// (RFC 8323
     CoAP-over-TLS/TCP, CONFIG_PIGEON_COAP_TRANSPORT_TCP) host; the scheme
-    must match the compiled-in transport (validated at first use). For
+    must match the compiled-in transport (a build error with GCC or
+    Clang, and refused at first use regardless). For
     CONFIG_PIGEON_CONNECTOR_MQTT it is the broker itself and carries no
     path at all (mqtts://mqtt.pidgeiot.com:8883): the pigeon is named by
     the handshake, not by a URL, which is also why that connector needs

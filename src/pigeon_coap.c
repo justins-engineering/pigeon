@@ -23,6 +23,20 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #endif
 #define PIGEON_COAP_DEFAULT_PORT "5684"
 
+/* A literal endpoint naming the other transport is a build error where the compiler folds a
+ * string comparison (GCC and Clang do); pigeon_coap_parse_endpoint() still checks at first use
+ * elsewhere. An empty endpoint is an unprovisioned build and stays legal. */
+#if defined(__GNUC__)
+BUILD_ASSERT(
+    sizeof(CONFIG_PIGEON_ENDPOINT) == 1 ||
+        __builtin_strncmp(
+            CONFIG_PIGEON_ENDPOINT, PIGEON_COAP_SCHEME "://", sizeof(PIGEON_COAP_SCHEME "://") - 1
+        ) == 0,
+    "CONFIG_PIGEON_ENDPOINT must start with " PIGEON_COAP_SCHEME
+    "://, the scheme of the CoAP transport this build selected"
+);
+#endif
+
 char pigeon_coap_host[PIGEON_COAP_HOST_MAX];
 char pigeon_coap_port[PIGEON_COAP_PORT_MAX];
 char pigeon_coap_path[PIGEON_COAP_PATH_MAX];

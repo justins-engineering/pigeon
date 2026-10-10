@@ -51,7 +51,7 @@ with `dovecote`:
   CoAP-over-DTLS/UDP (RFC 7252, `coaps://`) or CoAP-over-TLS/TCP (RFC 8323,
   `coaps+tcp://`). The platform terminates both on one authority and port,
   so `CONFIG_PIGEON_ENDPOINT`'s scheme must name the transport the build
-  selected.
+  selected; with GCC or Clang a mismatch is a build error.
 - `struct pigeon_shadow_doc` — `target_version`/`current_version` counters
   plus raw JSON `target_config`/`current_config` text, as returned by
   `GET /device/pigeons/:pigeon_id/shadow`.

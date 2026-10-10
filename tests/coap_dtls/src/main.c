@@ -47,6 +47,8 @@ static void teardown(void *fixture) {
 
 ZTEST_SUITE(coap_dtls, NULL, setup, NULL, NULL, teardown);
 
+/* check-refusals.sh also builds this suite for the TCP transport, which has no such bound. */
+#if defined(CONFIG_PIGEON_COAP_TRANSPORT_UDP)
 /* The ClientHello goes unanswered. Without a bound of the library's own, mbedTLS retransmits on
  * its defaults for about two minutes, and the modem for ever. */
 ZTEST(coap_dtls, test_handshake_gives_up_within_its_bound) {
@@ -65,3 +67,4 @@ ZTEST(coap_dtls, test_handshake_gives_up_within_its_bound) {
       "gave up after %lld ms", took
   );
 }
+#endif

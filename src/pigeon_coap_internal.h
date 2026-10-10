@@ -94,7 +94,8 @@ extern char pigeon_coap_path[PIGEON_COAP_PATH_MAX];
  * globals above, once. Validates the scheme against the compiled-in
  * transport (coaps+tcp:// for TCP, coaps:// for UDP/DTLS) so a config
  * minted for one transport can't be silently pointed at the other -- the
- * mismatch fails loudly at first use instead of as a connect timeout.
+ * mismatch fails loudly at first use instead of as a connect timeout (and at
+ * build time where pigeon_coap.c's BUILD_ASSERT can fold the comparison).
  */
 int pigeon_coap_parse_endpoint(void);
 
