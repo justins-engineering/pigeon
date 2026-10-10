@@ -227,11 +227,48 @@ int pigeon_coap_append_request_options(
   return 0;
 }
 
+/* Uptime until which every request answers -EACCES with no radio access, once the platform has
+ * refused this device's credentials or identity. Written under the transport lock. */
+static int64_t pigeon_coap_auth_hold_until;
+
+/* Every request goes through here. A refusal that names the credentials or the identity answers
+ * the same to every retry until something changes off the device (a re-provisioned PSK, a
+ * refreshed token, an undeleted pigeon), so retrying at the application's cadence only spends
+ * radio and the terminator's patience: hold off instead, as the MQTT connector does. */
+static int pigeon_coap_exchange(
+    uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
+    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
+    size_t *rsp_payload_len
+) {
+  if (k_uptime_get() < pigeon_coap_auth_hold_until) {
+    return -EACCES;
+  }
+
+  int err = pigeon_coap_transport_exchange(
+      code, leaf, payload, payload_len, opts, rsp_code, rsp_payload, rsp_payload_len
+  );
+
+  if (err == -EACCES ||
+      (err == 0 && (*rsp_code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
+                    *rsp_code == COAP_RESPONSE_CODE_FORBIDDEN))) {
+    LOG_ERR(
+        "Platform refused this device's credentials (%s); holding every CoAP request for %d s",
+        err ? "handshake" : (*rsp_code == COAP_RESPONSE_CODE_UNAUTHORIZED ? "4.01" : "4.03"),
+        CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC
+    );
+    pigeon_coap_auth_hold_until =
+        k_uptime_get() + (int64_t)CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC * MSEC_PER_SEC;
+    return -EACCES;
+  }
+
+  return err;
+}
+
 static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   uint8_t rsp_code;
   const uint8_t *payload;
   size_t payload_len;
-  int err = pigeon_coap_transport_exchange(
+  int err = pigeon_coap_exchange(
       COAP_METHOD_GET, "shadow", NULL, 0, NULL, &rsp_code, &payload, &payload_len
   );
 
@@ -283,7 +320,7 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
   uint8_t rsp_code;
   const uint8_t *payload;
   size_t payload_len;
-  int err = pigeon_coap_transport_exchange(
+  int err = pigeon_coap_exchange(
       COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, NULL, &rsp_code, &payload,
       &payload_len
   );
@@ -348,7 +385,7 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
   uint8_t rsp_code;
   const uint8_t *payload;
   size_t payload_len;
-  int err = pigeon_coap_transport_exchange(
+  int err = pigeon_coap_exchange(
       COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, NULL, &rsp_code, &payload,
       &payload_len
   );
@@ -427,7 +464,7 @@ static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) 
     const uint8_t *payload;
     size_t payload_len;
 
-    err = pigeon_coap_transport_exchange(
+    err = pigeon_coap_exchange(
         COAP_METHOD_POST, "logs", data + ctx.current, this_block, &opts, &rsp_code, &payload,
         &payload_len
     );

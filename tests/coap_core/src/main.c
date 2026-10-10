@@ -81,6 +81,8 @@ static void reset(void *fixture) {
   ARG_UNUSED(fixture);
   memset(&seen, 0, sizeof(seen));
   memset(&answer, 0, sizeof(answer));
+  /* Outlasts any hold an earlier test left; native_sim's clock skips ahead while idle. */
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC + 1));
 }
 
 ZTEST_SUITE(coap_core, NULL, NULL, reset, NULL, NULL);
@@ -268,4 +270,65 @@ ZTEST(coap_core, test_wire_doc_holds_a_nested_decode_to_the_cap) {
 
   make_config(wire.current_config, CONFIG_MAX);
   zassert_equal(pigeon_shadow_wire_doc(&wire, &out), -EMSGSIZE);
+}
+
+static int get(void) {
+  struct pigeon_shadow_doc out;
+
+  return pigeon_shadow_get(&out);
+}
+
+ZTEST(coap_core, test_unauthorized_holds_every_request_off_the_air) {
+  answer_with(COAP_RESPONSE_CODE_UNAUTHORIZED, NULL);
+  zassert_equal(get(), -EACCES);
+  zassert_equal(seen.calls, 1);
+
+  /* Whatever the request, and however the platform would answer it now. */
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+  zassert_equal(get(), -EACCES);
+  zassert_equal(pigeon_shadow_report(1, "{}"), -EACCES);
+  zassert_equal(pigeon_transport_report_telemetry("{\"k\":\"v\"}", 9, NULL), -EACCES);
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC - 1));
+  zassert_equal(get(), -EACCES);
+  zassert_equal(seen.calls, 1, "a held request must not reach the transport");
+}
+
+ZTEST(coap_core, test_forbidden_holds_like_unauthorized) {
+  answer_with(COAP_RESPONSE_CODE_FORBIDDEN, NULL);
+  zassert_equal(pigeon_shadow_report(1, "{}"), -EACCES);
+  zassert_equal(get(), -EACCES);
+  zassert_equal(seen.calls, 1);
+}
+
+ZTEST(coap_core, test_refused_handshake_holds_like_unauthorized) {
+  answer.err = -EACCES;
+  zassert_equal(get(), -EACCES);
+  answer_with(COAP_RESPONSE_CODE_CONTENT, NULL);
+  zassert_equal(get(), -EACCES);
+  zassert_equal(seen.calls, 1);
+}
+
+ZTEST(coap_core, test_hold_ends_after_the_backoff) {
+  answer_with(COAP_RESPONSE_CODE_UNAUTHORIZED, NULL);
+  zassert_equal(get(), -EACCES);
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC));
+
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+  zassert_ok(pigeon_shadow_report(1, "{}"));
+  zassert_equal(seen.calls, 2, "the first request after the hold must go out");
+}
+
+/* A link or a terminator in trouble may be fine next time: no hold. */
+ZTEST(coap_core, test_other_failures_do_not_hold) {
+  answer.err = -ETIMEDOUT;
+  zassert_equal(get(), -ETIMEDOUT);
+  answer.err = -ECONNREFUSED;
+  zassert_equal(get(), -ECONNREFUSED);
+  answer_with(COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE, NULL);
+  zassert_equal(get(), -EIO);
+  answer_with(COAP_RESPONSE_CODE_NOT_FOUND, NULL);
+  zassert_equal(get(), -EIO);
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+  zassert_ok(pigeon_shadow_report(1, "{}"));
+  zassert_equal(seen.calls, 5);
 }

@@ -246,6 +246,21 @@ config PIGEON_COAP_SEC_TAG
     CONFIG_PIGEON_HTTPS_SEC_TAG. Must match whatever the application
     provisioned under this tag.
 
+config PIGEON_COAP_AUTH_BACKOFF_SEC
+  int "Hold-off after the platform refuses this device's credentials (seconds)"
+  default 900
+  range 1 86400
+  help
+    A handshake the terminator refuses with a fatal alert (an identity
+    it does not know, such as a deleted pigeon, or a secret that does not
+    match) and a 4.01 or 4.03 answer (a token revoked by a refresh, a
+    Uri-Path naming another pigeon) will answer the same to every retry
+    until something changes off the device. For this long afterwards
+    every CoAP request returns -EACCES without a radio access; the first
+    one after it tries again. A terminator that abandons a handshake
+    without an alert leaves the device a handshake timeout instead, which
+    reads as a lost link and is retried on the application's schedule.
+
 endif # PIGEON_CONNECTOR_COAP
 
 # Also live on an MQTT or NIDD build that carries FOTA: the image fetch is an

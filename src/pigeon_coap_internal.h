@@ -135,7 +135,9 @@ int pigeon_coap_append_request_options(
  * blocks for the response. On success (return 0), rsp_code holds the CoAP
  * response code, and rsp_payload/rsp_payload_len the response payload
  * region (NULL/0 when the response carried none), pointing into
- * transport-owned static storage valid until the next exchange.
+ * transport-owned static storage valid until the next exchange. -EACCES
+ * means the peer refused the handshake outright (a fatal alert), which
+ * pigeon_coap.c treats as a refusal of the credentials.
  *
  * Callers hold the shared transport lock across this -- pigeon_coap.c's
  * public entry points do it for them. Both transports keep their session

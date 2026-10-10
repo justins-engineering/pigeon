@@ -368,6 +368,11 @@ int pigeon_shadow_flush(void);
  * of current_version while that report awaits confirmation), and updated_at
  * is 0.
  *
+ * On CONFIG_PIGEON_CONNECTOR_COAP, -EACCES means the platform refused this
+ * device's credentials or identity (a handshake refused with an alert, or a
+ * 4.01 or 4.03 answer); every CoAP request, this one included, then returns
+ * -EACCES without a radio access for CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC.
+ *
  * target_config/current_config point into a static buffer owned by the
  * connector compiled in: valid only until the next call. On NIDD,
  * current_config is valid only until the next pigeon_shadow_report().
@@ -395,7 +400,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out);
  *
  * On CONFIG_PIGEON_CONNECTOR_COAP, -EMSGSIZE means current_config is
  * CONFIG_PIGEON_SHADOW_CONFIG_MAX bytes or more, refused before anything is
- * sent.
+ * sent, and -EACCES has the meaning pigeon_shadow_get() gives it.
  *
  * On CONFIG_PIGEON_CONNECTOR_NIDD this sends one SHADOW_REPORT frame and waits
  * up to CONFIG_PIGEON_NIDD_REPLY_WAIT_SEC for the platform to confirm it.

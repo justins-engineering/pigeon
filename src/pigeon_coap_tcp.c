@@ -67,6 +67,9 @@ static int pigeon_coap_tcp_connect(void) {
   bool using_psk = coap_cfg->tls_psk_identity && coap_cfg->tls_psk_secret;
   int sock = -1;
   int last_errno = EHOSTUNREACH;
+  /* A fatal alert during the handshake: the peer answered and refused this device's
+   * credentials, which pigeon_coap.c holds off on rather than retrying. */
+  bool refused = false;
 
   for (struct zsock_addrinfo *res = addr_list; res; res = res->ai_next) {
     sock = zsock_socket(res->ai_family, SOCK_STREAM, IPPROTO_TLS_1_2);
@@ -108,6 +111,7 @@ static int pigeon_coap_tcp_connect(void) {
           res->ai_family, -errno
       );
       last_errno = errno;
+      refused |= (errno == ECONNABORTED);
       zsock_close(sock);
       sock = -1;
       continue;
@@ -120,7 +124,7 @@ static int pigeon_coap_tcp_connect(void) {
 
   if (sock < 0) {
     LOG_ERR("Failed to connect to %s on every resolved address: %d", pigeon_coap_host, last_errno);
-    return -last_errno;
+    return refused ? -EACCES : -last_errno;
   }
 
   return sock;
