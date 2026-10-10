@@ -14,7 +14,9 @@
  * unescapes it in place but refuses a string whose escaped length does not fit its buffer. Each
  * buffer therefore holds a quarter more than CONFIG_PIGEON_SHADOW_CONFIG_MAX (a quote or a
  * backslash costs one byte more on the wire), and pigeon_shadow_wire_doc() holds the decoded
- * text to the cap itself, which is what callers size their own copies by.
+ * text to the cap itself, which is what callers size their own copies by. The quarter is a
+ * budget, not a bound on real configs: the departure board's escape by about 28%, and fit only
+ * because they sit far under its cap.
  */
 #define PIGEON_SHADOW_CONFIG_WIRE_MAX \
   (CONFIG_PIGEON_SHADOW_CONFIG_MAX + CONFIG_PIGEON_SHADOW_CONFIG_MAX / 4)

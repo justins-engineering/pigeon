@@ -300,7 +300,7 @@ ones worth knowing before reading it:
   exclusive choice of transport. CoAP then chooses
   `CONFIG_PIGEON_COAP_TRANSPORT_TCP` (the default) or `_UDP`, whose DTLS
   handshake gives up after `CONFIG_PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC`
-  (31 s; the nRF91 modem has no bound of its own) and which asks for the
+  (31 s; the nRF91 modem's own default is documented both as none and as 123 s) and which asks for the
   shadow in blocks of `CONFIG_PIGEON_COAP_BLOCK2_SIZE` (512 bytes, RFC 7959
   Block2), so a shadow larger than a datagram arrives. A CoAP build holds every
   request off the air once the platform refuses its credentials, answering

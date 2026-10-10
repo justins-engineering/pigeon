@@ -9,6 +9,8 @@
 #define TEST_PSK_IDENTITY "pigeon-coap-dtls-test"
 #define TEST_PSK_SECRET "0123456789abcdef"
 
+/* A port on the host's own loopback, through NSOS: two runs of this suite at once fail each
+ * other's bind. */
 #define PEER_PORT 56841
 
 /* The other end of CONFIG_PIGEON_ENDPOINT: a plain UDP socket that counts what arrives and

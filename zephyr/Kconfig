@@ -194,10 +194,11 @@ config PIGEON_COAP_DTLS_HANDSHAKE_TIMEOUT_SEC
   default 31
   range 0 123
   help
-    The nRF91 modem never gives up on a DTLS handshake unless told to, and
-    the handshake runs under the transport lock every other call into this
-    library waits on, so a peer that stops answering mid-handshake would
-    hold that lock indefinitely. The modem accepts only 1, 3, 7, 15, 31, 63
+    nrf_socket.h gives the nRF91 modem's own default for a DTLS handshake
+    both as no timeout and as 123 s, and the handshake runs under the
+    transport lock every other call into this library waits on, so a peer
+    that stops answering mid-handshake would hold that lock that long or
+    for good. The modem accepts only 1, 3, 7, 15, 31, 63
     and 123 (its retransmission schedule summed), and the build refuses any
     other value. On native sockets the same total bounds mbedTLS's
     retransmission of each handshake flight, and
@@ -283,7 +284,10 @@ config PIGEON_COAP_AUTH_BACKOFF_SEC
     answer from the platform starts the count again. A terminator that
     abandons a handshake without an alert leaves the device a handshake
     timeout instead, which reads as a lost link and is retried on the
-    application's schedule.
+    application's schedule. DTLS lets a peer drop a record that fails
+    authentication without an alert, so a wrong key can look like that
+    too; which errno the nRF91 modem gives a refused handshake is not yet
+    seen on hardware.
 
 config PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC
   int "First hold-off after a credential refusal (seconds)"
