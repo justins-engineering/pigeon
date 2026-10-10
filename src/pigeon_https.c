@@ -10,6 +10,7 @@
 #include <zephyr/net/tls_credentials.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_shadow_wire.h"
 #include "pigeon_token.h"
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
@@ -17,20 +18,9 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_HTTPS_HOST_MAX 128
 #define PIGEON_HTTPS_PATH_MAX 128
 /* Sizes both the HTTP parser scratch buffer and the accumulated-body buffer
- * below off CONFIG_PIGEON_SHADOW_CONFIG_MAX (via PIGEON_HTTPS_CONFIG_MAX,
- * pigeon_internal.h), since a shadow GET body is by far the largest thing
- * either ever holds: two configs -- each up to CONFIG_MAX raw, and carried
- * on the wire as an escaped JSON string, where the dashboard-authored
- * quote/backslash density observed in real configs stays well under the
- * +25% growth budgeted here -- plus ~110 bytes of version/timestamp/key
- * framing, rounded up to 128. A fixed size with no escape headroom sits
- * one quote-dense config away from silent truncation; this formula gives
- * 2*400 + 128 = 928 bytes at the 320-byte default. */
-#define PIGEON_HTTPS_RECV_BUF_LEN \
-  (2 * (PIGEON_HTTPS_CONFIG_MAX + PIGEON_HTTPS_CONFIG_MAX / 4) + 128)
-/* PIGEON_HTTPS_CONFIG_MAX itself now lives in pigeon_internal.h -- pigeon_ws.c's
- * shadow_update frame decode (see zephyr/Kconfig: CONFIG_PIGEON_WS) shares the
- * same cap on target_config/current_config, so one file owns the definition. */
+ * below: a shadow GET body is by far the largest thing either ever holds
+ * (PIGEON_SHADOW_DOC_MAX, pigeon_shadow_wire.h). */
+#define PIGEON_HTTPS_RECV_BUF_LEN PIGEON_SHADOW_DOC_MAX
 #define PIGEON_HTTPS_AUTH_HEADER_MAX 384
 
 /*
@@ -124,37 +114,9 @@ static uint8_t pigeon_https_recv_buf[PIGEON_HTTPS_RECV_BUF_LEN];
 static char pigeon_https_body[PIGEON_HTTPS_RECV_BUF_LEN];
 static size_t pigeon_https_body_len;
 
-/* Wire shape of the JSON body GET <endpoint>/shadow returns (mirrors
- * capsules::PigeonShadow; see pigeon_shadow_doc in pigeon.h). target_config/
- * current_config are themselves JSON objects serialized as a string on the
- * wire (e.g. "target_config":"{\"log\":true}") -- decoding them with
- * JSON_TOK_STRING would hand back a raw, still-escaped pointer into
- * pigeon_https_body: '{\"log\":true}' is not valid JSON, so the app's own
- * json_obj_parse() on target_config would fail downstream regardless of
- * which keys/values it held. JSON_TOK_STRING_BUF actually unescapes into
- * a fixed-size buffer instead, so these are plain arrays (not pointers) and
- * this whole struct is a static instance (not a local), decoded into
- * directly -- pigeon_shadow_doc's target_config/current_config pointers
- * (see pigeon_shadow_get() below) alias straight into it, which is what
- * keeps them valid "until the next call" as pigeon.h documents, without a
- * separate copy-out step. */
-struct pigeon_shadow_wire {
-  int32_t target_version;
-  int32_t current_version;
-  char target_config[PIGEON_HTTPS_CONFIG_MAX];
-  char current_config[PIGEON_HTTPS_CONFIG_MAX];
-  int64_t updated_at;
-};
-
-static struct pigeon_shadow_wire pigeon_shadow_wire;
-
-static const struct json_obj_descr pigeon_shadow_wire_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, target_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, current_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, target_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, current_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_shadow_wire, updated_at, JSON_TOK_INT64),
-};
+/* Decoded into here, so the pointers pigeon_shadow_get() hands out stay valid until the next
+ * call, as pigeon.h documents. */
+static struct pigeon_shadow_wire pigeon_https_shadow;
 #endif /* CONFIG_PIGEON_CONNECTOR_HTTPS */
 
 /* Splits the endpoint above ("https://host[:port]/path...") into
@@ -380,25 +342,9 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
     return -ENODATA;
   }
 
-  int64_t decoded =
-      json_obj_parse(
-          pigeon_https_body, pigeon_https_body_len, pigeon_shadow_wire_descr,
-          ARRAY_SIZE(pigeon_shadow_wire_descr), &pigeon_shadow_wire
-      );
-
-  /* All 5 descriptor fields must decode: bits 0-4 set (0x1F). */
-  if (decoded < 0 || (decoded & 0x1F) != 0x1F) {
-    LOG_ERR("Failed to parse shadow response JSON (decoded=%lld)", decoded);
-    return decoded < 0 ? (int)decoded : -EBADMSG;
-  }
-
-  out->target_version = pigeon_shadow_wire.target_version;
-  out->current_version = pigeon_shadow_wire.current_version;
-  out->target_config = pigeon_shadow_wire.target_config;
-  out->current_config = pigeon_shadow_wire.current_config;
-  out->updated_at = pigeon_shadow_wire.updated_at;
-
-  return 0;
+  return pigeon_shadow_wire_decode(
+      pigeon_https_body, pigeon_https_body_len, &pigeon_https_shadow, out
+  );
 }
 
 #if defined(CONFIG_PIGEON_TOKEN_ROTATION)
@@ -488,9 +434,9 @@ static enum pigeon_token_gate pigeon_https_token_gate(void) {
   if (gate == PIGEON_TOKEN_GATE_OPEN) {
     /* The parse consumes its buffer, and the caller still reads the wire copy. */
     char config[PIGEON_HTTPS_CONFIG_MAX];
-    size_t len = strlen(pigeon_shadow_wire.target_config);
+    size_t len = strlen(pigeon_https_shadow.target_config);
 
-    memcpy(config, pigeon_shadow_wire.target_config, len + 1);
+    memcpy(config, pigeon_https_shadow.target_config, len + 1);
     if (pigeon_token_firmware_assigned(config, len, CONFIG_PIGEON_FOTA_CURRENT_VERSION)) {
       gate = PIGEON_TOKEN_GATE_FIRMWARE_ASSIGNED;
     }
@@ -525,7 +471,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   pigeon_transport_unlock();
 
   /* The lock covers the request and the decode, but out's config pointers
-   * alias pigeon_shadow_wire and escape it -- they stay valid only until
+   * alias pigeon_https_shadow and escape it -- they stay valid only until
    * the next call into this module, exactly as pigeon.h documents. A caller
    * that shares them with another thread must copy them out first. */
   return err;

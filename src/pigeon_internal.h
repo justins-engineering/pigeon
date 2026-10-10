@@ -202,17 +202,10 @@ int pigeon_transport_download_firmware(
 #endif /* CONFIG_PIGEON_FOTA */
 
 /*
- * Shared cap on a decoded shadow target_config/current_config's raw JSON
- * byte length. Originated in pigeon_https.c (see its history for the
- * 640/256 -> 320 bump when the "firmware" shadow key landed); moved here so
- * pigeon_ws.c's shadow_update frame decode (CONFIG_PIGEON_WS, below) can
- * share the exact same cap rather than drifting its own. Now sourced from
- * CONFIG_PIGEON_SHADOW_CONFIG_MAX (default 320, the historical value) so an
- * app whose target_config outgrows it -- e.g. the departure board's
- * runtime-tunable NTP/retry/interval keys plus a firmware target -- can
- * raise it without patching this header. pigeon_coap.c intentionally keeps
- * its own separate, smaller PIGEON_COAP_CONFIG_MAX -- CoAP has no WS
- * counterpart and unifying the two isn't part of this reuse rule.
+ * Cap on a decoded shadow target_config/current_config's raw JSON byte length,
+ * including the NUL, shared by every connector: the buffers that receive a
+ * config escaped on the wire are sized off it in pigeon_shadow_wire.h, and
+ * pigeon_shadow_wire_doc() holds the decoded text to it.
  */
 #define PIGEON_HTTPS_CONFIG_MAX CONFIG_PIGEON_SHADOW_CONFIG_MAX
 

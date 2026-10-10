@@ -373,7 +373,9 @@ int pigeon_shadow_flush(void);
  * current_config is valid only until the next pigeon_shadow_report().
  *
  * @param out Filled with the fetched shadow on success.
- * @return 0 on success, negative error code on transport/parse failure.
+ * @return 0 on success, negative error code on transport/parse failure:
+ *         -EMSGSIZE when a config, unescaped, is CONFIG_PIGEON_SHADOW_CONFIG_MAX
+ *         bytes or more, and -EBADMSG when the document lacks a field.
  */
 int pigeon_shadow_get(struct pigeon_shadow_doc *out);
 

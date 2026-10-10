@@ -82,12 +82,12 @@ static int pigeon_coap_udp_sock = -1;
 /* Response datagram storage. Payload pointers returned from
  * pigeon_coap_transport_exchange() alias into this, valid until the next
  * exchange (same contract as the TCP transport's body buffer). */
-static uint8_t pigeon_coap_udp_rsp[PIGEON_COAP_MSG_MAX];
+static uint8_t pigeon_coap_udp_rsp[PIGEON_COAP_RSP_MAX];
 
 /* Static rather than on the caller's stack: one caller is the log upload on the system
  * workqueue, and the transport lock already serializes every exchange. Retransmissions resend
  * from here, so it holds its bytes until the exchange ends. */
-static uint8_t pigeon_coap_udp_req[PIGEON_COAP_MSG_MAX];
+static uint8_t pigeon_coap_udp_req[PIGEON_COAP_REQ_MAX];
 
 static void pigeon_coap_udp_close(void) {
   if (pigeon_coap_udp_sock >= 0) {

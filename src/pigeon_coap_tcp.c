@@ -23,12 +23,12 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 /* Response body (Options+Payload, per RFC 8323 framing) accumulated by
  * pigeon_coap_tcp_read_frame(). */
-static uint8_t pigeon_coap_tcp_body[PIGEON_COAP_MSG_MAX];
+static uint8_t pigeon_coap_tcp_body[PIGEON_COAP_RSP_MAX];
 static size_t pigeon_coap_tcp_body_len;
 
 /* Static rather than on the caller's stack, for the reason pigeon_coap_udp.c gives: the log
  * upload runs on the system workqueue, and the transport lock serializes exchanges. */
-static uint8_t pigeon_coap_tcp_req[PIGEON_COAP_MSG_MAX];
+static uint8_t pigeon_coap_tcp_req[PIGEON_COAP_REQ_MAX];
 
 static int pigeon_coap_tcp_connect(void) {
   int err = pigeon_coap_register_psk();

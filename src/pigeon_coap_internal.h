@@ -6,6 +6,7 @@
 #include <zephyr/net/coap.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_shadow_wire.h"
 
 /*
  * Shared internals of the CoAP connector: a transport-agnostic core
@@ -22,19 +23,17 @@
 /* A shadow report body: current_config verbatim plus the fixed framing and an 11-character
  * int32 (49 bytes), with the NUL. */
 #define PIGEON_COAP_REPORT_BODY_MAX (CONFIG_PIGEON_SHADOW_CONFIG_MAX + 64)
-/* Request/response frame ceiling. The request side must fit the larger of a
- * full telemetry body (built and sized by pigeon_core.c -- see
- * PIGEON_TELEMETRY_BODY_MAX in pigeon_internal.h) and a shadow report, plus
- * CoAP framing: 384
- * bytes of headroom comfortably covers the option caps above (Uri-Path
- * segments up to PIGEON_COAP_PATH_MAX, Content-Format, payload marker, and
- * either transport's message header). The 640 floor preserves response
- * headroom for shadow GETs even when CONFIG_PIGEON_TELEMETRY_MAX_KEYS is
- * configured tiny. Each transport keeps one static request and one static
- * response buffer of this size (~1.7KB each at the default 8 keys). */
-#define PIGEON_COAP_MSG_MAX \
-  MAX(640, MAX(PIGEON_TELEMETRY_BODY_MAX, PIGEON_COAP_REPORT_BODY_MAX) + 384)
-#define PIGEON_COAP_CONFIG_MAX 256
+/* Request frame ceiling: the larger of a full telemetry body (built and
+ * sized by pigeon_core.c -- see PIGEON_TELEMETRY_BODY_MAX in
+ * pigeon_internal.h) and a shadow report, plus CoAP framing: 384 bytes of
+ * headroom comfortably covers the option caps above (Uri-Path segments up
+ * to PIGEON_COAP_PATH_MAX, Content-Format, Block1, payload marker, and
+ * either transport's message header). */
+#define PIGEON_COAP_REQ_MAX (MAX(PIGEON_TELEMETRY_BODY_MAX, PIGEON_COAP_REPORT_BODY_MAX) + 384)
+/* Response frame ceiling: a whole shadow document (pigeon_shadow_wire.h)
+ * plus a message header, token and options, which every other response
+ * here (an empty 2.xx, or a diagnostic payload) undercuts. */
+#define PIGEON_COAP_RSP_MAX (PIGEON_SHADOW_DOC_MAX + 64)
 
 #if defined(CONFIG_PIGEON_LOG_UPLOAD)
 /* Block1 payload size for the log upload (RFC 7959 szx 5). Block-wise

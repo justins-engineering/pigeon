@@ -49,6 +49,7 @@
 #include "pigeon_token.h"
 #include "pigeon_mqtt_policy.h"
 #include "pigeon_psk.h"
+#include "pigeon_shadow_wire.h"
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
@@ -80,9 +81,9 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 #define PIGEON_MQTT_SEND_TIMEOUT_MS 10000
 
 /* A retained shadow carries the full PigeonShadow with two JSON-in-a-string
- * configs, each capped at PIGEON_HTTPS_CONFIG_MAX once decoded; the escaped
- * wire form plus framing fits in twice that plus headroom. */
-#define PIGEON_MQTT_PAYLOAD_MAX (2 * PIGEON_HTTPS_CONFIG_MAX + 512)
+ * configs (PIGEON_SHADOW_DOC_MAX, pigeon_shadow_wire.h), with headroom for
+ * whatever else the broker's frame carries at the smaller caps. */
+#define PIGEON_MQTT_PAYLOAD_MAX MAX(PIGEON_SHADOW_DOC_MAX, 2 * PIGEON_HTTPS_CONFIG_MAX + 512)
 
 /* capsules::MAX_LOG_CHUNK_BYTES, which is also the broker's inbound payload
  * cap. A log batch larger than this is split across consecutive publishes
@@ -174,31 +175,8 @@ static struct {
     .backoff_base_sec = PIGEON_MQTT_BACKOFF_BASE_SEC,
 };
 
-/*
- * Wire shape of the retained pigeon/shadow/target payload: capsules::
- * PigeonShadow exactly as the device shadow GET returns it, which is why
- * this is the same struct and the same JSON_TOK_STRING_BUF reasoning as
- * pigeon_https.c's and pigeon_ws.c's copies -- the two configs are
- * JSON-in-a-JSON-string on the wire and must be unescaped in place. Static
- * so pigeon_shadow_doc's pointers can alias straight into it.
- */
-struct pigeon_mqtt_shadow_wire {
-  int32_t target_version;
-  int32_t current_version;
-  char target_config[PIGEON_HTTPS_CONFIG_MAX];
-  char current_config[PIGEON_HTTPS_CONFIG_MAX];
-  int64_t updated_at;
-};
-
-static struct pigeon_mqtt_shadow_wire pigeon_mqtt_shadow;
-
-static const struct json_obj_descr pigeon_mqtt_shadow_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct pigeon_mqtt_shadow_wire, target_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_mqtt_shadow_wire, current_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_mqtt_shadow_wire, target_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_mqtt_shadow_wire, current_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_mqtt_shadow_wire, updated_at, JSON_TOK_INT64),
-};
+/* The retained target, decoded where pigeon_shadow_doc's pointers can alias it. */
+static struct pigeon_shadow_wire pigeon_mqtt_shadow;
 
 int pigeon_mqtt_register_psk(void) {
   if (pigeon_mqtt_psk_registered) {
@@ -332,23 +310,13 @@ static int pigeon_mqtt_read_payload(struct mqtt_client *client, size_t len) {
 
 /* Decodes a retained target shadow and hands it to the app. */
 static void pigeon_mqtt_apply_shadow(size_t len) {
-  int ret = json_obj_parse(
-      (char *)pigeon_mqtt_payload, len, pigeon_mqtt_shadow_descr,
-      ARRAY_SIZE(pigeon_mqtt_shadow_descr), &pigeon_mqtt_shadow
-  );
+  struct pigeon_shadow_doc doc;
+  int ret = pigeon_shadow_wire_decode((char *)pigeon_mqtt_payload, len, &pigeon_mqtt_shadow, &doc);
 
   if (ret < 0) {
     LOG_ERR("Retained shadow failed to decode: %d", ret);
     return;
   }
-
-  struct pigeon_shadow_doc doc = {
-      .target_version = pigeon_mqtt_shadow.target_version,
-      .current_version = pigeon_mqtt_shadow.current_version,
-      .target_config = pigeon_mqtt_shadow.target_config,
-      .current_config = pigeon_mqtt_shadow.current_config,
-      .updated_at = pigeon_mqtt_shadow.updated_at,
-  };
 
   pigeon_event_cb_t cb;
 
@@ -1114,14 +1082,11 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
   }
 
   k_mutex_lock(&pigeon_mqtt_lock, K_FOREVER);
-  out->target_version = pigeon_mqtt_shadow.target_version;
-  out->current_version = pigeon_mqtt_shadow.current_version;
-  out->target_config = pigeon_mqtt_shadow.target_config;
-  out->current_config = pigeon_mqtt_shadow.current_config;
-  out->updated_at = pigeon_mqtt_shadow.updated_at;
+  /* Checked again here: a refused push was decoded into the same storage. */
+  int err = pigeon_shadow_wire_doc(&pigeon_mqtt_shadow, out);
   k_mutex_unlock(&pigeon_mqtt_lock);
 
-  return 0;
+  return err;
 }
 
 int pigeon_shadow_report(int32_t current_version, const char *current_config) {
@@ -1135,6 +1100,12 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
    * docs). The margin covers the fixed framing plus an 11-char int32, the
    * same arithmetic pigeon_https.c uses. */
   static char body[PIGEON_HTTPS_CONFIG_MAX + 64];
+
+  /* The cap the cached shadow below is held to. */
+  if (strlen(current_config) >= CONFIG_PIGEON_SHADOW_CONFIG_MAX) {
+    LOG_ERR("Shadow report does not fit (see CONFIG_PIGEON_SHADOW_CONFIG_MAX)");
+    return -EMSGSIZE;
+  }
 
   int len = snprintk(
       body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,

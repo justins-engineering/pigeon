@@ -31,6 +31,7 @@
 #include <zephyr/sys/printk.h>
 
 #include "pigeon_internal.h"
+#include "pigeon_shadow_wire.h"
 #include "pigeon_token.h"
 
 #if defined(CONFIG_PIGEON_TELEMETRY_BATCH)
@@ -160,23 +161,6 @@ static uint8_t pigeon_ws_scratch[CONFIG_PIGEON_WS_RX_BUF_SIZE];
 static uint8_t pigeon_ws_rx_buf[CONFIG_PIGEON_WS_RX_BUF_SIZE];
 
 /*
- * Wire shape of an inbound shadow_update frame's "shadow" object (mirrors
- * capsules::PigeonShadow, same fields/order as pigeon_https.c's
- * pigeon_shadow_wire -- see PIGEON_HTTPS_CONFIG_MAX in pigeon_internal.h for
- * why the config caps are shared). JSON_TOK_STRING_BUF (not JSON_TOK_STRING)
- * for the two configs: they're JSON-in-a-JSON-string on the wire and must be
- * unescaped in place, same reasoning as pigeon_https.c's pigeon_shadow_wire
- * (see its own comment for why).
- */
-struct pigeon_ws_shadow_wire {
-  int32_t target_version;
-  int32_t current_version;
-  char target_config[PIGEON_HTTPS_CONFIG_MAX];
-  char current_config[PIGEON_HTTPS_CONFIG_MAX];
-  int64_t updated_at;
-};
-
-/*
  * Wire shape of any inbound frame (dovecote/src/objects/ws.rs: only "pong"
  * and "shadow_update" are ever sent; "shadow" is present only on the latter,
  * see pigeon_ws_dispatch_frame()'s note on why the outer decode bitmask
@@ -184,22 +168,14 @@ struct pigeon_ws_shadow_wire {
  */
 struct pigeon_ws_frame_wire {
   char type[PIGEON_WS_TYPE_MAX];
-  struct pigeon_ws_shadow_wire shadow;
+  struct pigeon_shadow_wire shadow;
 };
 
 static struct pigeon_ws_frame_wire pigeon_ws_frame;
 
-static const struct json_obj_descr pigeon_ws_shadow_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shadow_wire, target_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shadow_wire, current_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shadow_wire, target_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shadow_wire, current_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_ws_shadow_wire, updated_at, JSON_TOK_INT64),
-};
-
 static const struct json_obj_descr pigeon_ws_frame_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct pigeon_ws_frame_wire, type, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_OBJECT(struct pigeon_ws_frame_wire, shadow, pigeon_ws_shadow_descr),
+    JSON_OBJ_DESCR_OBJECT(struct pigeon_ws_frame_wire, shadow, pigeon_shadow_wire_descr),
 };
 
 /* Bit position of each pigeon_ws_frame_descr entry in json_obj_parse()'s
@@ -830,7 +806,7 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
      * zephyr/lib/utils/json.c's decode_value()/obj_parse(): the outer
      * PIGEON_WS_FIELD_SHADOW bit only means the nested object parsed
      * without a syntax error -- it does NOT mean all 5 of
-     * pigeon_ws_shadow_descr's own sub-fields were present, the way a
+     * pigeon_shadow_wire_descr's own sub-fields were present, the way a
      * top-level json_obj_parse() call's return value would. The nested
      * obj_parse()'s own field-completeness bitmask is discarded by
      * decode_value() and never surfaces here. In practice this is safe
@@ -841,13 +817,12 @@ static void pigeon_ws_dispatch_frame(uint8_t *buf, size_t len) {
      * misbehaving peer would NOT be caught here the way pigeon_https.c's
      * top-level shadow decode catches a partial GET /shadow response.
      */
-    struct pigeon_shadow_doc doc = {
-        .target_version = pigeon_ws_frame.shadow.target_version,
-        .current_version = pigeon_ws_frame.shadow.current_version,
-        .target_config = pigeon_ws_frame.shadow.target_config,
-        .current_config = pigeon_ws_frame.shadow.current_config,
-        .updated_at = pigeon_ws_frame.shadow.updated_at,
-    };
+    struct pigeon_shadow_doc doc;
+
+    if (pigeon_shadow_wire_doc(&pigeon_ws_frame.shadow, &doc)) {
+      LOG_WRN("WS: dropping shadow_update over CONFIG_PIGEON_SHADOW_CONFIG_MAX");
+      return;
+    }
 
     LOG_INF(
         "WS: shadow_update pushed (target_version=%d current_version=%d)", doc.target_version,

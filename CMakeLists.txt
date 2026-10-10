@@ -42,6 +42,10 @@ if(CONFIG_PIGEON_CONNECTOR_HTTPS OR (CONFIG_PIGEON_CONNECTOR_MQTT AND CONFIG_PIG
    (CONFIG_PIGEON_CONNECTOR_NIDD AND CONFIG_PIGEON_FOTA))
   zephyr_library_sources(src/pigeon_https.c)
 endif()
+# The shadow document every connector but NIDD receives as JSON.
+if(CONFIG_PIGEON_CONNECTOR_HTTPS OR CONFIG_PIGEON_CONNECTOR_COAP OR CONFIG_PIGEON_CONNECTOR_MQTT)
+  zephyr_library_sources(src/pigeon_shadow_wire.c)
+endif()
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_MQTT  src/pigeon_mqtt_policy.c)
 zephyr_library_sources_ifdef(CONFIG_PIGEON_CONNECTOR_NIDD  src/pigeon_nidd.c)

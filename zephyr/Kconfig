@@ -545,17 +545,22 @@ config PIGEON_SHADOW_CONFIG_MAX
   default 320
   range 64 4096
   help
-    Cap on one decoded shadow config's raw JSON text, shared by the HTTPS
-    connector's shadow GET decode, pigeon_shadow_report()'s body framing,
-    and (CONFIG_PIGEON_WS) the shadow_update frame decode. The default is
-    the historical built-in value, sized for a target_config of a few
-    short app keys plus a "firmware" FOTA target. Raise it when the app's
-    target_config grows past that (a truncated config fails JSON parsing
-    downstream, it doesn't degrade gracefully). Static RAM cost scales
-    with it: the HTTPS connector keeps two receive/accumulate buffers
-    sized ~2.5x this value each (see PIGEON_HTTPS_RECV_BUF_LEN in
-    pigeon_https.c for the arithmetic), plus per-call stack framing of
-    about 1x. CONFIG_PIGEON_WS users raising this should check
+    Cap on one decoded shadow config's raw JSON text, shared by every
+    connector's shadow decode and by pigeon_shadow_report()'s body framing.
+    The default is the historical built-in value, sized for a
+    target_config of a few short app keys plus a "firmware" FOTA target.
+    Raise it when the app's target_config grows past that (a config over
+    the cap is refused, not truncated).
+
+    A config arrives escaped inside a JSON string, where each quote or
+    backslash takes one byte more, so the receive buffers hold a quarter
+    more than this: a config under the cap decodes while its length plus
+    its count of quotes and backslashes stays under 1.25 times this value.
+    Static RAM scales with it: two
+    such config buffers for the decoded shadow, and on HTTPS two receive
+    buffers of about 2.5x this value (PIGEON_SHADOW_DOC_MAX,
+    pigeon_shadow_wire.h); CoAP's one response buffer is the same size.
+    CONFIG_PIGEON_WS users raising this should check
     CONFIG_PIGEON_WS_RX_BUF_SIZE still covers a full shadow_update frame
     (two escaped configs plus framing).
 

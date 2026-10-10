@@ -14,6 +14,7 @@ project(pigeon_coap_core_test)
 target_sources(app PRIVATE
   src/main.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/pigeon_coap.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/pigeon_shadow_wire.c
 )
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
 

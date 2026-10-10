@@ -1,7 +1,6 @@
 #include <errno.h>
 #include <pigeon.h>
 #include <string.h>
-#include <zephyr/data/json.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/coap.h>
 #include <zephyr/sys/util.h>
@@ -9,6 +8,7 @@
 #include "pigeon_coap_internal.h"
 #include "pigeon_internal.h"
 #include "pigeon_psk.h"
+#include "pigeon_shadow_wire.h"
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
@@ -30,38 +30,9 @@ static bool pigeon_coap_endpoint_parsed;
 
 static bool pigeon_coap_psk_registered;
 
-/* Wire shape of the JSON payload a shadow GET returns (mirrors
- * capsules::PigeonShadow; see pigeon_shadow_doc in pigeon.h and the matching
- * copy of this in pigeon_https.c). target_config/current_config are
- * themselves JSON objects serialized as a string on the wire (e.g.
- * "target_config":"{\"log\":true}") -- JSON_TOK_STRING would hand back a
- * raw, still-escaped pointer into the response buffer ('{\"log\":true}' is
- * not valid JSON, so the app's own json_obj_parse() on target_config would
- * fail downstream regardless of which keys/values it held).
- * JSON_TOK_STRING_BUF actually unescapes into a fixed-size buffer
- * instead, so these are plain arrays (not pointers) and
- * this whole struct is a static instance (not a local), decoded into
- * directly -- pigeon_shadow_doc's target_config/current_config pointers
- * (see pigeon_shadow_get() below) alias straight into it, which is what
- * keeps them valid "until the next call" as pigeon.h documents, without a
- * separate copy-out step. */
-struct pigeon_coap_shadow_wire {
-  int32_t target_version;
-  int32_t current_version;
-  char target_config[PIGEON_COAP_CONFIG_MAX];
-  char current_config[PIGEON_COAP_CONFIG_MAX];
-  int64_t updated_at;
-};
-
-static struct pigeon_coap_shadow_wire pigeon_coap_shadow_wire;
-
-static const struct json_obj_descr pigeon_coap_shadow_wire_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, target_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, current_version, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, target_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, current_config, JSON_TOK_STRING_BUF),
-    JSON_OBJ_DESCR_PRIM(struct pigeon_coap_shadow_wire, updated_at, JSON_TOK_INT64),
-};
+/* Decoded into here, so the pointers pigeon_shadow_get() hands out stay valid until the next
+ * call, as pigeon.h documents. */
+static struct pigeon_shadow_wire pigeon_coap_shadow_wire;
 
 int pigeon_coap_parse_endpoint(void) {
   if (pigeon_coap_endpoint_parsed) {
@@ -264,24 +235,9 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
     return -ENODATA;
   }
 
-  int64_t decoded = json_obj_parse(
-      (char *)payload, payload_len, pigeon_coap_shadow_wire_descr,
-      ARRAY_SIZE(pigeon_coap_shadow_wire_descr), &pigeon_coap_shadow_wire
-  );
-
-  /* All 5 descriptor fields must decode: bits 0-4 set (0x1F). */
-  if (decoded < 0 || (decoded & 0x1F) != 0x1F) {
-    LOG_ERR("Failed to parse shadow response JSON (decoded=%lld)", decoded);
-    return decoded < 0 ? (int)decoded : -EBADMSG;
-  }
-
-  out->target_version = pigeon_coap_shadow_wire.target_version;
-  out->current_version = pigeon_coap_shadow_wire.current_version;
-  out->target_config = pigeon_coap_shadow_wire.target_config;
-  out->current_config = pigeon_coap_shadow_wire.current_config;
-  out->updated_at = pigeon_coap_shadow_wire.updated_at;
-
-  return 0;
+  /* The payload sits in the transport's static response buffer, which the next exchange
+   * overwrites anyway, so the parse may rewrite it. */
+  return pigeon_shadow_wire_decode((char *)payload, payload_len, &pigeon_coap_shadow_wire, out);
 }
 
 int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
@@ -306,7 +262,7 @@ int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
 static int pigeon_transport_report_telemetry_locked(const char *body, size_t body_len) {
   /* body arrives pre-escaped and pre-framed (one flat JSON object of every
    * pending key, at most PIGEON_TELEMETRY_BODY_MAX bytes) from
-   * pigeon_core.c's pigeon_telemetry_flush(). PIGEON_COAP_MSG_MAX is sized
+   * pigeon_core.c's pigeon_telemetry_flush(). PIGEON_COAP_REQ_MAX is sized
    * off PIGEON_TELEMETRY_BODY_MAX (see pigeon_coap_internal.h) so a full
    * batch always fits the frame; coap_packet_append_payload()'s own bounds
    * check remains the safe failure path regardless. */
