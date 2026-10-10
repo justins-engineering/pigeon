@@ -463,7 +463,9 @@ bool pigeon_fota_update_available(const struct pigeon_fota_info *info);
  * @brief Download, flash, and verify the firmware image info describes.
  *
  * Issues chunked device-authed HTTP Range GETs (CONFIG_PIGEON_FOTA_CHUNK_SIZE
- * bytes at a time) against <CONFIG_PIGEON_ENDPOINT>/firmware, writing each
+ * bytes at a time) against <CONFIG_PIGEON_ENDPOINT>/firmware, or
+ * <CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT>/firmware on the MQTT, CoAP and NIDD
+ * connectors, whose endpoint serves no firmware, writing each
  * chunk straight into MCUboot's secondary slot via Zephyr's dfu_target/
  * flash_img as it arrives -- the image is never held whole in RAM.
  * Verifies the downloaded byte count against info->size and a streamed

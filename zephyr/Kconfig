@@ -278,10 +278,11 @@ config PIGEON_COAP_AUTH_BACKOFF_SEC
 
 endif # PIGEON_CONNECTOR_COAP
 
-# Also live on an MQTT or NIDD build that carries FOTA: the image fetch is an
-# ordinary HTTPS request served by pigeon_https.c, so it needs the same
+# Also live on an MQTT, NIDD or CoAP build that carries FOTA: the image fetch
+# is an ordinary HTTPS request served by pigeon_https.c, so it needs the same
 # socket knobs even though the connector itself is somewhere else.
-if PIGEON_CONNECTOR_HTTPS || ((PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD) && PIGEON_FOTA)
+if PIGEON_CONNECTOR_HTTPS || \
+   ((PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD || PIGEON_CONNECTOR_COAP) && PIGEON_FOTA)
 
 config PIGEON_HTTPS_SEC_TAG
   int "TLS sec_tag for the Pigeon HTTPS requests"
@@ -299,7 +300,9 @@ config PIGEON_HTTPS_SEC_TAG
     from CONFIG_PIGEON_MQTT_SEC_TAG -- and necessarily so in PSK mode,
     where that tag holds a pre-shared key rather than a CA certificate.
     On a NIDD build with CONFIG_PIGEON_FOTA it is the tag for that same
-    firmware host, reached over the IP PDN beside the Non-IP one.
+    firmware host, reached over the IP PDN beside the Non-IP one. On a
+    CoAP build with CONFIG_PIGEON_FOTA it is the firmware host's CA and
+    must differ from CONFIG_PIGEON_COAP_SEC_TAG.
 
 config PIGEON_HTTPS_NATIVE_TLS
   bool "Run TLS natively (mbedTLS) over an offloaded transport socket"
@@ -325,7 +328,7 @@ config PIGEON_HTTPS_NATIVE_TLS
     connector socket: shadow, telemetry, log upload, and FOTA downloads.
     CONFIG_PIGEON_WS opens its own sockets and does not honor this yet.
 
-endif # PIGEON_CONNECTOR_HTTPS || ((PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD) && PIGEON_FOTA)
+endif # PIGEON_CONNECTOR_HTTPS || (another connector && PIGEON_FOTA)
 
 if PIGEON_CONNECTOR_MQTT
 
@@ -670,7 +673,7 @@ endif # PIGEON_LOG_UPLOAD
 config PIGEON_FOTA
   bool "Firmware-over-the-air (FOTA) updates via MCUboot"
   default n
-  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_MQTT || \
+  depends on PIGEON_CONNECTOR_HTTPS || PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_COAP || \
              (PIGEON_CONNECTOR_NIDD && PIGEON_NIDD_DEDICATED_CID)
   depends on BOOTLOADER_MCUBOOT
   depends on IMG_MANAGER
@@ -702,8 +705,10 @@ config PIGEON_FOTA
     CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT below, since CONFIG_PIGEON_ENDPOINT
     there names the broker. A NIDD build fetches the same way over the IP
     PDN beside its Non-IP one, which is why it needs
-    CONFIG_PIGEON_NIDD_DEDICATED_CID. The CoAP connector has no download
-    transport for this yet.
+    CONFIG_PIGEON_NIDD_DEDICATED_CID. A CoAP build fetches the same way:
+    the shadow that names the image arrives over CoAP and the image itself
+    over HTTPS, because a megabyte in 1 KB DTLS blocks would be a
+    platform request per block with no resume.
 
     Default backend is upstream Zephyr's own flash_img/stream_flash +
     boot_request_upgrade() (see PIGEON_FOTA_NCS below for the vendor
@@ -731,23 +736,24 @@ if PIGEON_FOTA
 
 config PIGEON_FOTA_HTTPS_ENDPOINT
   string "HTTPS device base the firmware image is fetched from"
-  depends on PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD
+  depends on PIGEON_CONNECTOR_MQTT || PIGEON_CONNECTOR_NIDD || PIGEON_CONNECTOR_COAP
   default ""
   help
     This pigeon's own https:// device base, e.g.
     https://api.pidgeiot.com/device/pigeons/<pigeon_id> -- exactly what an
     HTTPS-connector build puts in CONFIG_PIGEON_ENDPOINT, and needed as its
     own symbol here because on an MQTT build CONFIG_PIGEON_ENDPOINT names
-    the broker (mqtts://host:8883), which serves no firmware, and on a NIDD
-    build the Non-IP APN (nidd://VZWSCEF).
+    the broker (mqtts://host:8883), which serves no firmware, on a NIDD
+    build the Non-IP APN (nidd://VZWSCEF), and on a CoAP build the
+    terminator (coaps://host:5684/...).
 
-    Required whenever CONFIG_PIGEON_FOTA is on with the MQTT or NIDD
+    Required whenever CONFIG_PIGEON_FOTA is on with the MQTT, NIDD or CoAP
     connector, and enforced at build time rather than at download time: an
     empty value is a BUILD_ASSERT in pigeon_https.c, not a device that gets
     a firmware target and then cannot fetch it. The same build must also
-    carry CONFIG_PIGEON_TOKEN, even in MQTT's PSK mode, because the image
-    fetch is an ordinary device-authenticated HTTPS request whatever the
-    connector itself uses.
+    carry CONFIG_PIGEON_TOKEN, even in MQTT's PSK mode and on CoAP, because
+    the image fetch is an ordinary device-authenticated HTTPS request
+    whatever the connector itself uses.
 
 config PIGEON_FOTA_NCS
   bool "Use the nRF Connect SDK dfu_target backend instead of upstream flash_img"
@@ -1511,9 +1517,11 @@ config PIGEON_TOKEN
     password). A NIDD build reads it only for CONFIG_PIGEON_FOTA, whose
     image fetch is an HTTPS request over the IP PDN. The connectors that
     authenticate through a PSK handshake instead -- CoAP, and
-    CONFIG_PIGEON_MQTT_AUTH_PSK -- never read it: the platform maps the
-    handshake identity to the pigeon and holds the token server-side, so
-    those builds may leave it empty.
+    CONFIG_PIGEON_MQTT_AUTH_PSK -- read it only for CONFIG_PIGEON_FOTA's
+    image fetch: the platform maps the handshake identity to the pigeon and
+    holds the token server-side, so without FOTA those builds may leave it
+    empty. With FOTA it is the token the platform holds for this pigeon,
+    the same one the terminator presents on the device's behalf.
 
 config PIGEON_TELEMETRY_MAX_KEYS
   int "Max distinct telemetry keys pending between flushes"

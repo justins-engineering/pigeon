@@ -28,14 +28,14 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
  *
  * Normally the connector's own: CONFIG_PIGEON_ENDPOINT is an
  * https://host/device/pigeons/<id> base and every operation hangs a leaf off
- * it. On a CONFIG_PIGEON_CONNECTOR_MQTT or _NIDD build this file is compiled
- * for one reason only -- the FOTA image fetch, which stays on HTTPS because a
- * megabyte-scale image has no business on an MQTT session or a NIDD frame and
- * the platform already serves it Range-chunked -- and there
- * CONFIG_PIGEON_ENDPOINT names the broker or the Non-IP APN, neither of which
- * serves firmware. So those builds point this at its own symbol instead, and
- * the mismatch cannot happen silently: the two are different strings with
- * different Kconfig help.
+ * it. On a CONFIG_PIGEON_CONNECTOR_MQTT, _NIDD or _COAP build this file is
+ * compiled for one reason only -- the FOTA image fetch, which stays on HTTPS
+ * because a megabyte-scale image has no business on an MQTT session, a NIDD
+ * frame or a run of DTLS blocks and the platform already serves it
+ * Range-chunked -- and there CONFIG_PIGEON_ENDPOINT names the broker, the
+ * Non-IP APN or the CoAP terminator, none of which serves firmware. So those
+ * builds point this at its own symbol instead, and the mismatch cannot happen
+ * silently: the two are different strings with different Kconfig help.
  */
 #if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
 #define PIGEON_HTTPS_ENDPOINT        CONFIG_PIGEON_ENDPOINT
@@ -51,13 +51,14 @@ LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 BUILD_ASSERT(
     sizeof(CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT) > 1,
     "CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT must name this pigeon's https:// device base on an "
-    "MQTT or NIDD build: CONFIG_PIGEON_ENDPOINT names the broker or the APN, not a firmware host"
+    "MQTT, NIDD or CoAP build: CONFIG_PIGEON_ENDPOINT names the broker, the APN or the CoAP "
+    "terminator, not a firmware host"
 );
 BUILD_ASSERT(
     sizeof(CONFIG_PIGEON_TOKEN) > 1,
-    "CONFIG_PIGEON_TOKEN must be set for FOTA on an MQTT or NIDD build: the image fetch is an "
-    "ordinary device-authenticated HTTPS request, even when the connector itself carries no "
-    "token"
+    "CONFIG_PIGEON_TOKEN must be set for FOTA on an MQTT, NIDD or CoAP build: the image fetch "
+    "is an ordinary device-authenticated HTTPS request, even when the connector itself carries "
+    "no token"
 );
 #endif
 
@@ -106,8 +107,8 @@ static bool pigeon_https_endpoint_parsed;
 /* The connector proper: the three device-facing operations and the shadow
  * decode behind them. Compiled out when this file is built ONLY to carry the
  * FOTA download for another connector (see the endpoint note at the top),
- * where the MQTT or NIDD connector defines these same hooks and the image
- * fetch is all that is wanted from here. */
+ * where that connector defines these same hooks and the image fetch is all
+ * that is wanted from here. */
 static uint8_t pigeon_https_recv_buf[PIGEON_HTTPS_RECV_BUF_LEN];
 
 /* Body accumulated across (possibly multiple) http_response_cb_t calls. */
@@ -256,8 +257,8 @@ static int pigeon_https_connect(void) {
 /* The connector proper: the three device-facing operations and the shadow
  * decode behind them. Compiled out when this file is built ONLY to carry the
  * FOTA download for another connector (see the endpoint note at the top),
- * where the MQTT or NIDD connector defines these same hooks and the image
- * fetch is all that is wanted from here. */
+ * where that connector defines these same hooks and the image fetch is all
+ * that is wanted from here. */
 static int pigeon_https_response_cb(
     struct http_response *rsp, enum http_final_call final_data, void *user_data
 ) {
@@ -556,8 +557,8 @@ static const struct http_parser_settings pigeon_https_header_cb = {
 /* The connector proper: the three device-facing operations and the shadow
  * decode behind them. Compiled out when this file is built ONLY to carry the
  * FOTA download for another connector (see the endpoint note at the top),
- * where the MQTT or NIDD connector defines these same hooks and the image
- * fetch is all that is wanted from here. */
+ * where that connector defines these same hooks and the image fetch is all
+ * that is wanted from here. */
 #define PIGEON_HTTPS_TELEMETRY_RETRY_AFTER_MAX_SEC 3600
 
 static int pigeon_transport_report_telemetry_locked(

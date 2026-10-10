@@ -169,8 +169,9 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
 - `pigeon_fota_apply(info)` — chunked, device-authed HTTP Range GETs
   against `<CONFIG_PIGEON_ENDPOINT>/firmware`
   (`CONFIG_PIGEON_FOTA_CHUNK_SIZE` bytes at a time, always over HTTPS: on
-  the HTTPS connector, on MQTT, and on NIDD with a dedicated Non-IP
-  context, the last two fetching from `CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT`),
+  the HTTPS connector, on MQTT, on CoAP, and on NIDD with a dedicated
+  Non-IP context, the last three fetching from
+  `CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT` with `CONFIG_PIGEON_TOKEN`),
   writing straight into MCUboot's secondary slot via Zephyr's `flash_img`
   (NCS's `dfu_target` with `CONFIG_PIGEON_FOTA_NCS`)
   as each chunk arrives — the image is never held whole in RAM. Verifies
@@ -314,10 +315,10 @@ ones worth knowing before reading it:
   is an opaque binary credential the platform verifies against this
   pigeon's own stored public key, not a JWT; the connectors that
   authenticate through a PSK handshake instead (CoAP, and MQTT in PSK
-  mode) never read it, so those builds may leave it empty, unless an MQTT
-  build also enables `CONFIG_PIGEON_FOTA`: its image download is an HTTPS
-  request that carries the token. NIDD reads it only for FOTA over the IP
-  PDN.
+  mode) never read it, so those builds may leave it empty, unless they
+  also enable `CONFIG_PIGEON_FOTA`: the image download is an HTTPS request
+  that carries the token, the same one the platform keeps for the pigeon.
+  NIDD reads it only for FOTA over the IP PDN.
 - `CONFIG_PIGEON_TOKEN_ROTATION` (HTTPS, needs a settings backend, `default n`)
   — lets the platform replace the token without a reflash. The device keeps
   the token it rotated to in its pigeon's own settings record,

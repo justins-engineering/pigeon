@@ -35,11 +35,12 @@ zephyr_library_sources_ifdef(CONFIG_PIGEON_COAP_TRANSPORT_UDP src/pigeon_coap_ud
 # pigeon_https.c is two things: the HTTPS connector, and the FOTA image
 # fetch. A firmware image stays on HTTPS whatever the connector is (it runs to
 # megabytes and the device route already serves it Range-chunked), so an
-# MQTT or NIDD build with FOTA compiles this file for its second half only --
-# the connector hooks inside it are #ifdef'd out there, since the other
-# connector defines those same symbols.
+# MQTT, NIDD or CoAP build with FOTA compiles this file for its second half
+# only -- the connector hooks inside it are #ifdef'd out there, since the
+# other connector defines those same symbols.
 if(CONFIG_PIGEON_CONNECTOR_HTTPS OR (CONFIG_PIGEON_CONNECTOR_MQTT AND CONFIG_PIGEON_FOTA) OR
-   (CONFIG_PIGEON_CONNECTOR_NIDD AND CONFIG_PIGEON_FOTA))
+   (CONFIG_PIGEON_CONNECTOR_NIDD AND CONFIG_PIGEON_FOTA) OR
+   (CONFIG_PIGEON_CONNECTOR_COAP AND CONFIG_PIGEON_FOTA))
   zephyr_library_sources(src/pigeon_https.c)
 endif()
 # The shadow document every connector but NIDD receives as JSON.

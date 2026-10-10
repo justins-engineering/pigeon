@@ -1,0 +1,7 @@
+# CONFIG_PIGEON_FOTA needs CONFIG_BOOTLOADER_MCUBOOT, which links the image into the code
+# partition, an option native_sim only offers with a load offset. Nothing here boots through
+# MCUboot; the suite only stages an image in the second slot.
+config HAS_FLASH_LOAD_OFFSET
+	default y
+
+source "Kconfig.zephyr"
