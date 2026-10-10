@@ -598,9 +598,17 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
       current_version
   );
 
+  /* The answer echoes the whole shadow, as large as a GET's, and only its code is read. Asking
+   * for its smallest block (16 bytes) leaves the rest on the terminator, so it is never a
+   * datagram the link cannot carry, whatever the terminator's own ceiling. */
+  struct pigeon_coap_req_opts opts = {
+      .content_format = COAP_CONTENT_FORMAT_APP_JSON,
+      .has_block2 = true,
+      .block2 = 0,
+  };
   struct pigeon_coap_rsp rsp;
   int err = pigeon_coap_exchange(
-      COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, NULL, &rsp
+      COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, &opts, &rsp
   );
 
   if (err) {

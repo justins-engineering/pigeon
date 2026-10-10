@@ -18,6 +18,8 @@ static struct {
   char leaf[16];
   char body[2048];
   size_t body_len;
+  bool has_opts;
+  struct pigeon_coap_req_opts opts;
 } seen;
 
 static struct {
@@ -31,9 +33,11 @@ int pigeon_coap_transport_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
     const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
-  ARG_UNUSED(opts);
-
   seen.calls++;
+  seen.has_opts = opts != NULL;
+  if (opts) {
+    seen.opts = *opts;
+  }
   seen.code = code;
   strncpy(seen.leaf, leaf, sizeof(seen.leaf) - 1);
   zassert_true(payload_len < sizeof(seen.body));
@@ -115,6 +119,42 @@ ZTEST(coap_core, test_report_carries_the_largest_version_whole) {
 
   zassert_ok(pigeon_shadow_report(INT32_MIN, config));
   zassert_str_equal(seen.body, expect);
+}
+
+/* The answer is the whole shadow again, past the nRF9160's datagram at loft's default ceiling. */
+ZTEST(coap_core, test_report_asks_for_the_smallest_block_of_its_answer) {
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+
+  zassert_ok(pigeon_shadow_report(7, "{}"));
+  zassert_true(seen.has_opts);
+  zassert_true(seen.opts.has_block2);
+  zassert_equal(seen.opts.block2, 0, "block 0 of 16 bytes");
+  zassert_equal(seen.opts.content_format, COAP_CONTENT_FORMAT_APP_JSON);
+  zassert_is_null(seen.opts.block1);
+}
+
+/* The options go on in ascending number, Block2 (23) after Content-Format (12). */
+ZTEST(coap_core, test_report_options_frame_as_zephyr_parses_them) {
+  static const uint8_t token[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  struct pigeon_coap_req_opts opts = {
+      .content_format = COAP_CONTENT_FORMAT_APP_JSON,
+      .has_block2 = true,
+      .block2 = 0,
+  };
+  uint8_t buf[256];
+  struct coap_packet pkt;
+  struct coap_packet parsed;
+
+  zassert_ok(pigeon_coap_parse_endpoint());
+  zassert_ok(coap_packet_init(
+      &pkt, buf, sizeof(buf), COAP_VERSION_1, COAP_TYPE_CON, 8, token, COAP_METHOD_POST, 1
+  ));
+  zassert_ok(pigeon_coap_append_request_options(&pkt, "shadow", true, &opts));
+  zassert_ok(coap_packet_append_payload_marker(&pkt));
+  zassert_ok(coap_packet_append_payload(&pkt, (const uint8_t *)"{}", 2));
+  zassert_ok(coap_packet_parse(&parsed, buf, pkt.offset, NULL, 0));
+  zassert_equal(coap_get_option_int(&parsed, COAP_OPTION_CONTENT_FORMAT), 50);
+  zassert_equal(coap_get_option_int(&parsed, COAP_OPTION_BLOCK2), 0);
 }
 
 ZTEST(coap_core, test_oversized_report_is_refused_and_not_sent) {
