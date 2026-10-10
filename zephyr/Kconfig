@@ -752,8 +752,9 @@ config PIGEON_FOTA_HTTPS_ENDPOINT
 
     Required whenever CONFIG_PIGEON_FOTA is on with the MQTT, NIDD or CoAP
     connector, and enforced at build time rather than at download time: an
-    empty value is a BUILD_ASSERT in pigeon_https.c, not a device that gets
-    a firmware target and then cannot fetch it. The same build must also
+    empty value, or one that does not start with https://, is a
+    BUILD_ASSERT in pigeon_https.c, not a device that gets a firmware
+    target and then cannot fetch it. The same build must also
     carry CONFIG_PIGEON_TOKEN, even in MQTT's PSK mode and on CoAP, because
     the image fetch is an ordinary device-authenticated HTTPS request
     whatever the connector itself uses.

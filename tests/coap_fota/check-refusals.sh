@@ -33,6 +33,10 @@ try() {
 
 try refused no-firmware-host "FOTA_HTTPS_ENDPOINT must name" \
   '-DCONFIG_PIGEON_FOTA_HTTPS_ENDPOINT=""'
+try refused coaps-firmware-host "must start with https://" \
+  '-DCONFIG_PIGEON_FOTA_HTTPS_ENDPOINT="coaps://127.0.0.1/device/pigeons/test"'
+try refused http-firmware-host "must start with https://" \
+  '-DCONFIG_PIGEON_FOTA_HTTPS_ENDPOINT="http://127.0.0.1/device/pigeons/test"'
 try refused no-token "PIGEON_TOKEN must be set for FOTA" '-DCONFIG_PIGEON_TOKEN=""'
 try refused shared-tag "HTTPS_SEC_TAG must differ" -DCONFIG_PIGEON_HTTPS_SEC_TAG=45
 try refused default-tags "HTTPS_SEC_TAG must differ" -DCONFIG_PIGEON_HTTPS_SEC_TAG=1 \

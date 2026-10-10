@@ -54,6 +54,15 @@ BUILD_ASSERT(
     "MQTT, NIDD or CoAP build: CONFIG_PIGEON_ENDPOINT names the broker, the APN or the CoAP "
     "terminator, not a firmware host"
 );
+/* The fetch dials TLS on 443 whatever the scheme says, so a coaps:// base copied from the
+ * connector's own endpoint would fail only at download time. Checked where the compiler folds
+ * the comparison (GCC and Clang). */
+#if defined(__GNUC__)
+BUILD_ASSERT(
+    __builtin_strncmp(CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT, "https://", sizeof("https://") - 1) == 0,
+    "CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT must start with https://"
+);
+#endif
 BUILD_ASSERT(
     sizeof(CONFIG_PIGEON_TOKEN) > 1,
     "CONFIG_PIGEON_TOKEN must be set for FOTA on an MQTT, NIDD or CoAP build: the image fetch "
