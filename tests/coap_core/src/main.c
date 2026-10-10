@@ -84,10 +84,13 @@ static void make_config(char *out, size_t len) {
 
 static void reset(void *fixture) {
   ARG_UNUSED(fixture);
+  /* Outlasts any hold an earlier test left (native_sim's clock skips ahead while idle), and an
+   * answer clears the refusal count, so each test starts at the first hold. */
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC + 1));
+  answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
+  zassert_ok(pigeon_shadow_report(1, "{}"));
   memset(&seen, 0, sizeof(seen));
   memset(&answer, 0, sizeof(answer));
-  /* Outlasts any hold an earlier test left; native_sim's clock skips ahead while idle. */
-  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC + 1));
 }
 
 ZTEST_SUITE(coap_core, NULL, NULL, reset, NULL, NULL);
@@ -329,7 +332,7 @@ ZTEST(coap_core, test_unauthorized_holds_every_request_off_the_air) {
   zassert_equal(get(), -EACCES);
   zassert_equal(pigeon_shadow_report(1, "{}"), -EACCES);
   zassert_equal(pigeon_transport_report_telemetry("{\"k\":\"v\"}", 9, NULL), -EACCES);
-  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC - 1));
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC - 1));
   zassert_equal(get(), -EACCES);
   zassert_equal(seen.calls, 1, "a held request must not reach the transport");
 }
@@ -359,14 +362,57 @@ ZTEST(coap_core, test_a_local_eacces_does_not_hold) {
   zassert_equal(seen.calls, 2, "the next request must go out");
 }
 
-ZTEST(coap_core, test_hold_ends_after_the_backoff) {
-  answer_with(COAP_RESPONSE_CODE_UNAUTHORIZED, NULL);
+/* One refusal can be an outage that has already passed: the first hold is the short one. */
+ZTEST(coap_core, test_first_hold_ends_after_the_first_backoff) {
+  answer.err = PIGEON_COAP_HANDSHAKE_REFUSED;
   zassert_equal(get(), -EACCES);
-  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC));
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC));
 
   answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
   zassert_ok(pigeon_shadow_report(1, "{}"));
   zassert_equal(seen.calls, 2, "the first request after the hold must go out");
+}
+
+/* With the transport refusing, the time from the last refused request to the next one that
+ * reaches the transport: the hold that refusal started, in whole seconds. */
+static int64_t next_hold(void) {
+  int calls = seen.calls;
+  int64_t start = k_uptime_get();
+
+  do {
+    k_sleep(K_SECONDS(1));
+    (void)get();
+  } while (seen.calls == calls);
+
+  return (k_uptime_get() - start) / MSEC_PER_SEC;
+}
+
+/* Refused again and again, the device is refused: the hold doubles until the ceiling. */
+ZTEST(coap_core, test_repeated_refusals_lengthen_the_hold_to_the_ceiling) {
+  int64_t expect = CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC;
+
+  answer.err = PIGEON_COAP_HANDSHAKE_REFUSED;
+  zassert_equal(get(), -EACCES);
+  for (int i = 0; i < 7; i++) {
+    int64_t took = next_hold();
+
+    zassert_equal(took, expect, "refusal %d held %lld s, not %lld s", i + 1, took, expect);
+    expect = MIN(2 * expect, CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC);
+  }
+  zassert_equal(expect, CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC, "the ceiling was reached");
+}
+
+/* Any other answer means the credentials got through, so the next refusal starts short. */
+ZTEST(coap_core, test_an_answer_starts_the_count_again) {
+  answer_with(COAP_RESPONSE_CODE_UNAUTHORIZED, NULL);
+  zassert_equal(get(), -EACCES);
+  k_sleep(K_SECONDS(CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC));
+  answer_with(COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE, NULL);
+  zassert_equal(get(), -EIO);
+
+  answer.err = PIGEON_COAP_HANDSHAKE_REFUSED;
+  zassert_equal(get(), -EACCES);
+  zassert_equal(next_hold(), CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC);
 }
 
 /* A link or a terminator in trouble may be fine next time: no hold. */

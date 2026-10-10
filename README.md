@@ -303,8 +303,10 @@ ones worth knowing before reading it:
   (31 s; the nRF91 modem has no bound of its own) and which asks for the
   shadow in blocks of `CONFIG_PIGEON_COAP_BLOCK2_SIZE` (512 bytes, RFC 7959
   Block2), so a shadow larger than a datagram arrives. A CoAP build holds every
-  request off the air for `CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC` (900 s)
-  once the platform refuses its credentials, answering `-EACCES`. MQTT chooses
+  request off the air once the platform refuses its credentials, answering
+  `-EACCES`: for `CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC` (60 s) after the
+  first refusal, doubling while refusals repeat, at most
+  `CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC` (900 s). MQTT chooses
   `CONFIG_PIGEON_MQTT_AUTH_CERT` or `_PSK`; NIDD needs
   `CONFIG_PIGEON_NIDD_CLAIM_KEY` and has `_DEDICATED_CID` (default y),
   `_RAI_IDLE_MS`, `_REPLY_WAIT_SEC`, `_SHADOW_WAIT_SEC` and

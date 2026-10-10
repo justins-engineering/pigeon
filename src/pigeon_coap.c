@@ -355,14 +355,34 @@ int pigeon_coap_read_packet(const struct coap_packet *pkt, struct pigeon_coap_rs
   );
 }
 
+BUILD_ASSERT(
+    CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC <= CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC,
+    "CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC must not exceed CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC"
+);
+
 /* Uptime until which every request answers -EACCES with no radio access, once the platform has
- * refused this device's credentials or identity. Written under the transport lock. */
+ * refused this device's credentials or identity. Written under the transport lock, as is the
+ * count of refusals since the platform last answered otherwise. */
 static int64_t pigeon_coap_auth_hold_until;
+static uint8_t pigeon_coap_auth_refusals;
+
+/* The first hold, doubled for each refusal after it, at most the ceiling. */
+static int64_t pigeon_coap_auth_hold_ms(void) {
+  const int64_t ceiling = (int64_t)CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC * MSEC_PER_SEC;
+  int64_t hold = (int64_t)CONFIG_PIGEON_COAP_AUTH_BACKOFF_FIRST_SEC * MSEC_PER_SEC;
+
+  for (uint8_t i = 1; i < pigeon_coap_auth_refusals && hold < ceiling; i++) {
+    hold *= 2;
+  }
+
+  return MIN(hold, ceiling);
+}
 
 /* Every request goes through here. A refusal that names the credentials or the identity answers
  * the same to every retry until something changes off the device (a re-provisioned PSK, a
  * refreshed token, an undeleted pigeon), so retrying at the application's cadence only spends
- * radio and the terminator's patience: hold off instead, as the MQTT connector does. */
+ * radio and the terminator's patience: hold off instead, as the MQTT connector does. The same
+ * refusal can come from an outage that ends on its own, so the hold starts short and grows. */
 static int pigeon_coap_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
     const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
@@ -376,14 +396,23 @@ static int pigeon_coap_exchange(
   if (err == PIGEON_COAP_HANDSHAKE_REFUSED ||
       (err == 0 && (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
                     rsp->code == COAP_RESPONSE_CODE_FORBIDDEN))) {
+    if (pigeon_coap_auth_refusals < UINT8_MAX) {
+      pigeon_coap_auth_refusals++;
+    }
+
+    int64_t hold_ms = pigeon_coap_auth_hold_ms();
+
     LOG_ERR(
         "Platform refused this device's credentials (%s); holding every CoAP request for %d s",
         err ? "handshake" : (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ? "4.01" : "4.03"),
-        CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC
+        (int)(hold_ms / MSEC_PER_SEC)
     );
-    pigeon_coap_auth_hold_until =
-        k_uptime_get() + (int64_t)CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC * MSEC_PER_SEC;
+    pigeon_coap_auth_hold_until = k_uptime_get() + hold_ms;
     return -EACCES;
+  }
+
+  if (err == 0) {
+    pigeon_coap_auth_refusals = 0;
   }
 
   return err;
