@@ -315,10 +315,12 @@ int pigeon_coap_read_body(
     uint8_t head = body[off++];
 
     if (head == 0xFF) {
-      if (off < len) {
-        rsp->payload = body + off;
-        rsp->payload_len = len - off;
+      /* RFC 7252 sec 3: a marker with no payload after it is a format error. */
+      if (off == len) {
+        return -EBADMSG;
       }
+      rsp->payload = body + off;
+      rsp->payload_len = len - off;
       return 0;
     }
 
@@ -345,14 +347,22 @@ int pigeon_coap_read_body(
         rsp->etag_len = (uint8_t)opt_len;
         break;
       case COAP_OPTION_BLOCK2:
-        err = pigeon_coap_read_uint(val, opt_len, &rsp->block2);
+        /* RFC 7959 sec 2.2: zero to three bytes. */
+        err = opt_len > 3 ? -EBADMSG : pigeon_coap_read_uint(val, opt_len, &rsp->block2);
         rsp->has_block2 = true;
+        break;
+      case COAP_OPTION_BLOCK1:
+        /* Echoed on the log upload's answers, and not read. */
+        err = opt_len > 3 ? -EBADMSG : 0;
         break;
       case COAP_OPTION_SIZE2:
         err = pigeon_coap_read_uint(val, opt_len, &rsp->size2);
         rsp->has_size2 = true;
         break;
       default:
+        /* RFC 7252 sec 5.4.1: a critical option, odd-numbered, that this client does not know
+         * makes the response unusable. */
+        err = (number & 1) ? -EBADMSG : 0;
         break;
     }
 

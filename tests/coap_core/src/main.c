@@ -550,6 +550,12 @@ ZTEST(coap_core, test_read_body_refuses_malformed_options) {
   static const uint8_t etag9[] = {(4 << 4) | 9, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   /* A five-byte Size2 (28): delta 13 + 15. */
   static const uint8_t size5[] = {(13 << 4) | 5, 15, 0, 0, 0, 1, 0};
+  /* A payload marker with nothing after it (RFC 7252 sec 3). */
+  static const uint8_t marker_only[] = {0xFF};
+  /* A four-byte Block2 (23): delta 13 + 10 (RFC 7959 sec 2.2 allows three). */
+  static const uint8_t block4[] = {(13 << 4) | 4, 10, 0, 0, 0, 0x06};
+  /* Proxy-Uri (35), critical and unknown here: delta 13 + 22, one byte. */
+  static const uint8_t critical[] = {(13 << 4) | 1, 22, 'x'};
 
   zassert_equal(pigeon_coap_read_body(0x45, past, sizeof(past), &rsp), -EBADMSG);
   zassert_equal(pigeon_coap_read_body(0x45, delta15, sizeof(delta15), &rsp), -EBADMSG);
@@ -557,4 +563,16 @@ ZTEST(coap_core, test_read_body_refuses_malformed_options) {
   zassert_equal(pigeon_coap_read_body(0x45, etag0, sizeof(etag0), &rsp), -EBADMSG);
   zassert_equal(pigeon_coap_read_body(0x45, etag9, sizeof(etag9), &rsp), -EBADMSG);
   zassert_equal(pigeon_coap_read_body(0x45, size5, sizeof(size5), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, marker_only, sizeof(marker_only), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, block4, sizeof(block4), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, critical, sizeof(critical), &rsp), -EBADMSG);
+}
+
+/* Block1 (27) is critical, and loft echoes it on the log upload's answers. */
+ZTEST(coap_core, test_read_body_accepts_an_echoed_block1) {
+  /* Block1: delta 13 + 14, one byte, num 0 m 1 szx 5. */
+  static const uint8_t body[] = {(13 << 4) | 1, 14, 0x0D};
+  struct pigeon_coap_rsp rsp;
+
+  zassert_ok(pigeon_coap_read_body(COAP_RESPONSE_CODE_CONTINUE, body, sizeof(body), &rsp));
 }
