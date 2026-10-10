@@ -2,6 +2,7 @@
 #include <pigeon.h>
 #include <string.h>
 #include <zephyr/net/coap.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/ztest.h>
 
 #include "pigeon_coap_internal.h"
@@ -28,8 +29,7 @@ static struct {
 
 int pigeon_coap_transport_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
   ARG_UNUSED(opts);
 
@@ -45,9 +45,10 @@ int pigeon_coap_transport_exchange(
     return answer.err;
   }
 
-  *rsp_code = answer.code;
-  *rsp_payload = answer.payload_len ? (const uint8_t *)answer.payload : NULL;
-  *rsp_payload_len = answer.payload_len;
+  memset(rsp, 0, sizeof(*rsp));
+  rsp->code = answer.code;
+  rsp->payload = answer.payload_len ? (const uint8_t *)answer.payload : NULL;
+  rsp->payload_len = answer.payload_len;
 
   return 0;
 }
@@ -331,4 +332,106 @@ ZTEST(coap_core, test_other_failures_do_not_hold) {
   answer_with(COAP_RESPONSE_CODE_CHANGED, NULL);
   zassert_ok(pigeon_shadow_report(1, "{}"));
   zassert_equal(seen.calls, 5);
+}
+
+/* A response as the UDP transport receives it: framed and parsed by Zephyr, then read through
+ * the same call the transport makes. */
+ZTEST(coap_core, test_read_packet_keeps_block2_size2_etag_and_payload) {
+  static const uint8_t token[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  static const uint8_t etag[4] = {0xde, 0xad, 0xbe, 0xef};
+  uint8_t buf[128];
+  struct coap_packet pkt;
+  struct pigeon_coap_rsp rsp;
+
+  zassert_ok(coap_packet_init(
+      &pkt, buf, sizeof(buf), COAP_VERSION_1, COAP_TYPE_ACK, 8, token,
+      COAP_RESPONSE_CODE_CONTENT, 0x1234
+  ));
+  zassert_ok(coap_packet_append_option(&pkt, COAP_OPTION_ETAG, etag, sizeof(etag)));
+  zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_CONTENT_FORMAT, 50));
+  zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK2, (1 << 4) | 0x08 | 5));
+  zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_SIZE2, 1075));
+  zassert_ok(coap_packet_append_payload_marker(&pkt));
+  zassert_ok(coap_packet_append_payload(&pkt, (const uint8_t *)"{}", 2));
+
+  struct coap_packet parsed;
+
+  zassert_ok(coap_packet_parse(&parsed, buf, pkt.offset, NULL, 0));
+  zassert_ok(pigeon_coap_read_packet(&parsed, &rsp));
+  zassert_equal(rsp.code, COAP_RESPONSE_CODE_CONTENT);
+  zassert_true(rsp.has_block2);
+  zassert_equal(rsp.block2, (1 << 4) | 0x08 | 5);
+  zassert_true(rsp.has_size2);
+  zassert_equal(rsp.size2, 1075);
+  zassert_equal(rsp.etag_len, sizeof(etag));
+  zassert_mem_equal(rsp.etag, etag, sizeof(etag));
+  zassert_equal(rsp.payload_len, 2);
+  zassert_mem_equal(rsp.payload, "{}", 2);
+}
+
+/* Options with one- and two-byte extended deltas and lengths, as an RFC 8323 frame body. */
+ZTEST(coap_core, test_read_body_walks_extended_deltas_and_lengths) {
+  static uint8_t body[2 + 20 + 5 + 300 + 3 + 2];
+  size_t n = 0;
+  struct pigeon_coap_rsp rsp;
+
+  /* Location-Path (8): delta 8, length 13 + 7. */
+  body[n++] = (8 << 4) | 13;
+  body[n++] = 7;
+  memset(&body[n], 'p', 20);
+  n += 20;
+  /* Option 300, elective so skipped: delta 269 + 23, length 269 + 31. */
+  body[n++] = (14 << 4) | 14;
+  sys_put_be16(300 - 8 - 269, &body[n]);
+  n += 2;
+  sys_put_be16(300 - 269, &body[n]);
+  n += 2;
+  memset(&body[n], 'x', 300);
+  n += 300;
+  body[n++] = 0xFF;
+  body[n++] = '{';
+  body[n++] = '}';
+
+  zassert_ok(pigeon_coap_read_body(COAP_RESPONSE_CODE_CONTENT, body, n, &rsp));
+  zassert_false(rsp.has_block2);
+  zassert_false(rsp.has_size2);
+  zassert_equal(rsp.etag_len, 0);
+  zassert_equal(rsp.payload_len, 2);
+  zassert_mem_equal(rsp.payload, "{}", 2);
+}
+
+ZTEST(coap_core, test_read_body_without_payload) {
+  /* Block2 (23): delta 13 + 10, one byte, num 0 m 0 szx 6. */
+  static const uint8_t body[] = {(13 << 4) | 1, 10, 0x06};
+  struct pigeon_coap_rsp rsp;
+
+  zassert_ok(pigeon_coap_read_body(COAP_RESPONSE_CODE_CONTENT, body, sizeof(body), &rsp));
+  zassert_true(rsp.has_block2);
+  zassert_equal(rsp.block2, 0x06);
+  zassert_is_null(rsp.payload);
+  zassert_equal(rsp.payload_len, 0);
+  zassert_ok(pigeon_coap_read_body(COAP_RESPONSE_CODE_CHANGED, NULL, 0, &rsp));
+  zassert_is_null(rsp.payload);
+}
+
+ZTEST(coap_core, test_read_body_refuses_malformed_options) {
+  struct pigeon_coap_rsp rsp;
+  /* A value running past the body. */
+  static const uint8_t past[] = {(4 << 4) | 4, 0xaa, 0xbb};
+  /* A reserved delta nibble. */
+  static const uint8_t delta15[] = {(15 << 4) | 0};
+  /* An extended length cut short. */
+  static const uint8_t cut[] = {(4 << 4) | 14, 0x00};
+  /* An empty ETag, and a nine-byte one. */
+  static const uint8_t etag0[] = {(4 << 4) | 0};
+  static const uint8_t etag9[] = {(4 << 4) | 9, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  /* A five-byte Size2 (28): delta 13 + 15. */
+  static const uint8_t size5[] = {(13 << 4) | 5, 15, 0, 0, 0, 1, 0};
+
+  zassert_equal(pigeon_coap_read_body(0x45, past, sizeof(past), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, delta15, sizeof(delta15), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, cut, sizeof(cut), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, etag0, sizeof(etag0), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, etag9, sizeof(etag9), &rsp), -EBADMSG);
+  zassert_equal(pigeon_coap_read_body(0x45, size5, sizeof(size5), &rsp), -EBADMSG);
 }

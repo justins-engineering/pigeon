@@ -3,6 +3,7 @@
 #include <string.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/coap.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
 
 #include "pigeon_coap_internal.h"
@@ -217,14 +218,123 @@ int pigeon_coap_append_request_options(
     }
   }
 
-  /* Block1 (27) goes on after Content-Format (12): options must be appended
-   * in ascending option number, and a payload-less block would be
-   * meaningless anyway. */
+  /* Block2 (23) and Block1 (27) go on after Content-Format (12): options must be appended in
+   * ascending option number. */
+  if (opts && opts->has_block2) {
+    err = coap_append_option_int(cpkt, COAP_OPTION_BLOCK2, opts->block2);
+    if (err) {
+      return err;
+    }
+  }
+
   if (opts && opts->block1) {
     return coap_append_block1_option(cpkt, opts->block1);
   }
 
   return 0;
+}
+
+/* An extended option delta or length (RFC 7252 sec 3.1): 13 and 14 take one and two more bytes,
+ * 15 is reserved. */
+static int pigeon_coap_read_ext(
+    const uint8_t *body, size_t len, size_t *off, uint8_t nibble, uint32_t *out
+) {
+  if (nibble < 13) {
+    *out = nibble;
+  } else if (nibble == 13 && len - *off >= 1) {
+    *out = 13U + body[*off];
+    *off += 1;
+  } else if (nibble == 14 && len - *off >= 2) {
+    *out = 269U + sys_get_be16(&body[*off]);
+    *off += 2;
+  } else {
+    return -EBADMSG;
+  }
+
+  return 0;
+}
+
+/* A uint option (RFC 7252 sec 3.2): big-endian, leading zeros dropped. Block2 and Size2 both
+ * fit four bytes. */
+static int pigeon_coap_read_uint(const uint8_t *val, uint32_t len, uint32_t *out) {
+  if (len > sizeof(*out)) {
+    return -EBADMSG;
+  }
+
+  *out = 0;
+  for (uint32_t i = 0; i < len; i++) {
+    *out = (*out << 8) | val[i];
+  }
+
+  return 0;
+}
+
+int pigeon_coap_read_body(
+    uint8_t code, const uint8_t *body, size_t len, struct pigeon_coap_rsp *rsp
+) {
+  size_t off = 0;
+  uint32_t number = 0;
+
+  memset(rsp, 0, sizeof(*rsp));
+  rsp->code = code;
+
+  while (off < len) {
+    uint8_t head = body[off++];
+
+    if (head == 0xFF) {
+      if (off < len) {
+        rsp->payload = body + off;
+        rsp->payload_len = len - off;
+      }
+      return 0;
+    }
+
+    uint32_t delta;
+    uint32_t opt_len;
+
+    if (pigeon_coap_read_ext(body, len, &off, head >> 4, &delta) ||
+        pigeon_coap_read_ext(body, len, &off, head & 0x0F, &opt_len) || opt_len > len - off) {
+      return -EBADMSG;
+    }
+
+    const uint8_t *val = body + off;
+    int err = 0;
+
+    off += opt_len;
+    number += delta;
+
+    switch (number) {
+      case COAP_OPTION_ETAG:
+        if (opt_len == 0 || opt_len > sizeof(rsp->etag)) {
+          return -EBADMSG;
+        }
+        memcpy(rsp->etag, val, opt_len);
+        rsp->etag_len = (uint8_t)opt_len;
+        break;
+      case COAP_OPTION_BLOCK2:
+        err = pigeon_coap_read_uint(val, opt_len, &rsp->block2);
+        rsp->has_block2 = true;
+        break;
+      case COAP_OPTION_SIZE2:
+        err = pigeon_coap_read_uint(val, opt_len, &rsp->size2);
+        rsp->has_size2 = true;
+        break;
+      default:
+        break;
+    }
+
+    if (err) {
+      return err;
+    }
+  }
+
+  return 0;
+}
+
+int pigeon_coap_read_packet(const struct coap_packet *pkt, struct pigeon_coap_rsp *rsp) {
+  return pigeon_coap_read_body(
+      coap_header_get_code(pkt), pkt->data + pkt->hdr_len, pkt->offset - pkt->hdr_len, rsp
+  );
 }
 
 /* Uptime until which every request answers -EACCES with no radio access, once the platform has
@@ -237,23 +347,19 @@ static int64_t pigeon_coap_auth_hold_until;
  * radio and the terminator's patience: hold off instead, as the MQTT connector does. */
 static int pigeon_coap_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
   if (k_uptime_get() < pigeon_coap_auth_hold_until) {
     return -EACCES;
   }
 
-  int err = pigeon_coap_transport_exchange(
-      code, leaf, payload, payload_len, opts, rsp_code, rsp_payload, rsp_payload_len
-  );
+  int err = pigeon_coap_transport_exchange(code, leaf, payload, payload_len, opts, rsp);
 
-  if (err == -EACCES ||
-      (err == 0 && (*rsp_code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
-                    *rsp_code == COAP_RESPONSE_CODE_FORBIDDEN))) {
+  if (err == -EACCES || (err == 0 && (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ||
+                                      rsp->code == COAP_RESPONSE_CODE_FORBIDDEN))) {
     LOG_ERR(
         "Platform refused this device's credentials (%s); holding every CoAP request for %d s",
-        err ? "handshake" : (*rsp_code == COAP_RESPONSE_CODE_UNAUTHORIZED ? "4.01" : "4.03"),
+        err ? "handshake" : (rsp->code == COAP_RESPONSE_CODE_UNAUTHORIZED ? "4.01" : "4.03"),
         CONFIG_PIGEON_COAP_AUTH_BACKOFF_SEC
     );
     pigeon_coap_auth_hold_until =
@@ -265,30 +371,28 @@ static int pigeon_coap_exchange(
 }
 
 static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
-  uint8_t rsp_code;
-  const uint8_t *payload;
-  size_t payload_len;
-  int err = pigeon_coap_exchange(
-      COAP_METHOD_GET, "shadow", NULL, 0, NULL, &rsp_code, &payload, &payload_len
-  );
+  struct pigeon_coap_rsp rsp;
+  int err = pigeon_coap_exchange(COAP_METHOD_GET, "shadow", NULL, 0, NULL, &rsp);
 
   if (err) {
     return err;
   }
 
-  if ((rsp_code >> 5) != 2) {
-    LOG_ERR("Shadow GET returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+  if ((rsp.code >> 5) != 2) {
+    LOG_ERR("Shadow GET returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
     return -EIO;
   }
 
-  if (!payload || payload_len == 0) {
+  if (!rsp.payload) {
     LOG_ERR("Shadow GET returned no payload");
     return -ENODATA;
   }
 
   /* The payload sits in the transport's static response buffer, which the next exchange
    * overwrites anyway, so the parse may rewrite it. */
-  return pigeon_shadow_wire_decode((char *)payload, payload_len, &pigeon_coap_shadow_wire, out);
+  return pigeon_shadow_wire_decode(
+      (char *)rsp.payload, rsp.payload_len, &pigeon_coap_shadow_wire, out
+  );
 }
 
 int pigeon_shadow_get(struct pigeon_shadow_doc *out) {
@@ -317,20 +421,17 @@ static int pigeon_transport_report_telemetry_locked(const char *body, size_t bod
    * off PIGEON_TELEMETRY_BODY_MAX (see pigeon_coap_internal.h) so a full
    * batch always fits the frame; coap_packet_append_payload()'s own bounds
    * check remains the safe failure path regardless. */
-  uint8_t rsp_code;
-  const uint8_t *payload;
-  size_t payload_len;
+  struct pigeon_coap_rsp rsp;
   int err = pigeon_coap_exchange(
-      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, NULL, &rsp_code, &payload,
-      &payload_len
+      COAP_METHOD_POST, "telemetry", (const uint8_t *)body, body_len, NULL, &rsp
   );
 
   if (err) {
     return err;
   }
 
-  if ((rsp_code >> 5) != 2) {
-    LOG_ERR("Telemetry report POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+  if ((rsp.code >> 5) != 2) {
+    LOG_ERR("Telemetry report POST returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
     return -EIO;
   }
 
@@ -382,20 +483,17 @@ static int pigeon_shadow_report_locked(int32_t current_version, const char *curr
       current_version
   );
 
-  uint8_t rsp_code;
-  const uint8_t *payload;
-  size_t payload_len;
+  struct pigeon_coap_rsp rsp;
   int err = pigeon_coap_exchange(
-      COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, NULL, &rsp_code, &payload,
-      &payload_len
+      COAP_METHOD_POST, "shadow", (const uint8_t *)body, (size_t)len, NULL, &rsp
   );
 
   if (err) {
     return err;
   }
 
-  if ((rsp_code >> 5) != 2) {
-    LOG_ERR("Shadow report POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+  if ((rsp.code >> 5) != 2) {
+    LOG_ERR("Shadow report POST returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
     return -EIO;
   }
 
@@ -460,31 +558,28 @@ static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) 
     size_t remaining = len - ctx.current;
     size_t this_block = MIN(remaining, (size_t)block_bytes);
     bool last = (this_block == remaining);
-    uint8_t rsp_code;
-    const uint8_t *payload;
-    size_t payload_len;
+    struct pigeon_coap_rsp rsp;
 
     err = pigeon_coap_exchange(
-        COAP_METHOD_POST, "logs", data + ctx.current, this_block, &opts, &rsp_code, &payload,
-        &payload_len
+        COAP_METHOD_POST, "logs", data + ctx.current, this_block, &opts, &rsp
     );
 
     if (err) {
       return err;
     }
 
-    if ((rsp_code >> 5) != 2) {
-      LOG_ERR("Log upload POST returned CoAP %u.%02u", rsp_code >> 5, rsp_code & 0x1F);
+    if ((rsp.code >> 5) != 2) {
+      LOG_ERR("Log upload POST returned CoAP %u.%02u", rsp.code >> 5, rsp.code & 0x1F);
       return -EIO;
     }
 
     /* 2.31 Continue is what acknowledges a non-final block; anything else
      * means the server stopped reassembling early, so every byte still
      * queued behind this one would be appended to nothing. */
-    if (!last && rsp_code != COAP_RESPONSE_CODE_CONTINUE) {
+    if (!last && rsp.code != COAP_RESPONSE_CODE_CONTINUE) {
       LOG_ERR(
           "Log upload block %u answered %u.%02u, expected 2.31 Continue",
-          (unsigned)(ctx.current / block_bytes), rsp_code >> 5, rsp_code & 0x1F
+          (unsigned)(ctx.current / block_bytes), rsp.code >> 5, rsp.code & 0x1F
       );
       return -EIO;
     }

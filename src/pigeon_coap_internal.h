@@ -27,7 +27,7 @@
  * sized by pigeon_core.c -- see PIGEON_TELEMETRY_BODY_MAX in
  * pigeon_internal.h) and a shadow report, plus CoAP framing: 384 bytes of
  * headroom comfortably covers the option caps above (Uri-Path segments up
- * to PIGEON_COAP_PATH_MAX, Content-Format, Block1, payload marker, and
+ * to PIGEON_COAP_PATH_MAX, Content-Format, Block2, Block1, payload marker, and
  * either transport's message header). */
 #define PIGEON_COAP_REQ_MAX (MAX(PIGEON_TELEMETRY_BODY_MAX, PIGEON_COAP_REPORT_BODY_MAX) + 384)
 /* Response frame ceiling: a whole shadow document (pigeon_shadow_wire.h)
@@ -71,17 +71,59 @@
 /*
  * Per-request extras for pigeon_coap_append_request_options() and
  * pigeon_coap_transport_exchange() below. NULL means the shape every
- * request but the log upload uses: a JSON body, no block-wise transfer.
+ * request but the log upload and the shadow GET uses: a JSON body, no
+ * block-wise transfer.
  */
 struct pigeon_coap_req_opts {
   /* COAP_CONTENT_FORMAT_APP_*, appended only when a payload follows. */
   uint16_t content_format;
+  /* A Block2 option value (RFC 7959 sec 2.2: num << 4 | szx) to ask for one block of the
+   * response. Encoded by the caller rather than through a coap_block_context, because
+   * Zephyr's helper reads the method from where an RFC 7252 header keeps it, which an
+   * RFC 8323 frame does not. */
+  bool has_block2;
+  uint32_t block2;
   /* State for one block of a multi-block request body, or NULL for a
    * request that fits a single message. The option append reads it and
    * never advances it -- stepping ctx->current between blocks belongs to
    * the caller driving the sequence. */
   struct coap_block_context *block1;
 };
+
+/* RFC 7252 sec 5.10.6: an ETag is one to eight bytes. */
+#define PIGEON_COAP_ETAG_MAX 8
+
+/*
+ * One response as the core reads it. payload points into transport-owned
+ * static storage valid until the next exchange, and is NULL when the
+ * response carried none. Of the options only the three a block-wise
+ * response needs are kept.
+ */
+struct pigeon_coap_rsp {
+  uint8_t code;
+  const uint8_t *payload;
+  size_t payload_len;
+  bool has_block2;
+  uint32_t block2;
+  bool has_size2;
+  uint32_t size2;
+  /* 0 when the response carried no ETag. */
+  uint8_t etag_len;
+  uint8_t etag[PIGEON_COAP_ETAG_MAX];
+};
+
+/*
+ * Reads a response's options and payload from body, the bytes after its
+ * header and token, in RFC 7252 sec 3.1's encoding, which RFC 8323 frames
+ * unchanged. -EBADMSG when an option runs past the body, a reserved nibble
+ * appears, or a kept option's value has an impossible length.
+ */
+int pigeon_coap_read_body(
+    uint8_t code, const uint8_t *body, size_t len, struct pigeon_coap_rsp *rsp
+);
+
+/* pigeon_coap_read_body() over a packet coap_packet_parse() accepted. */
+int pigeon_coap_read_packet(const struct coap_packet *pkt, struct pigeon_coap_rsp *rsp);
 
 /* Parsed once (lazily) from CONFIG_PIGEON_ENDPOINT by
  * pigeon_coap_parse_endpoint() below. */
@@ -132,10 +174,8 @@ int pigeon_coap_append_request_options(
  * Implemented by the compiled-in transport. Performs one full request/
  * response exchange: builds the transport's own framing around the shared
  * options (pigeon_coap_append_request_options() above), sends it, and
- * blocks for the response. On success (return 0), rsp_code holds the CoAP
- * response code, and rsp_payload/rsp_payload_len the response payload
- * region (NULL/0 when the response carried none), pointing into
- * transport-owned static storage valid until the next exchange. -EACCES
+ * blocks for the response. On success (return 0), rsp holds the response
+ * as pigeon_coap_read_body() reads it. -EACCES
  * means the peer refused the handshake outright (a fatal alert), which
  * pigeon_coap.c treats as a refusal of the credentials.
  *
@@ -146,8 +186,7 @@ int pigeon_coap_append_request_options(
  */
 int pigeon_coap_transport_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 );
 
 #endif /* PIDGEIOT_PIGEON_COAP_INTERNAL_H_ */

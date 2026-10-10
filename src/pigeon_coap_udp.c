@@ -353,8 +353,7 @@ static int pigeon_coap_udp_wait_one(
  * responses. */
 static int pigeon_coap_udp_do_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *out
 ) {
   struct coap_packet req;
   uint8_t *token = coap_next_token();
@@ -487,21 +486,12 @@ static int pigeon_coap_udp_do_exchange(
   }
 
 deliver:
-  *rsp_code = coap_header_get_code(&rsp);
-
-  uint16_t found_len = 0;
-  const uint8_t *found = coap_packet_get_payload(&rsp, &found_len);
-
-  *rsp_payload = found_len ? found : NULL;
-  *rsp_payload_len = found_len;
-
-  return 0;
+  return pigeon_coap_read_packet(&rsp, out);
 }
 
 int pigeon_coap_transport_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
   int err = pigeon_coap_parse_endpoint();
 
@@ -514,9 +504,7 @@ int pigeon_coap_transport_exchange(
     return err;
   }
 
-  err = pigeon_coap_udp_do_exchange(
-      code, leaf, payload, payload_len, opts, rsp_code, rsp_payload, rsp_payload_len
-  );
+  err = pigeon_coap_udp_do_exchange(code, leaf, payload, payload_len, opts, rsp);
 
   if (err) {
     /* Whatever went wrong (retransmits exhausted, socket error, RST), the

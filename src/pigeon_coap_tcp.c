@@ -389,76 +389,9 @@ static int pigeon_coap_tcp_read_message(
   return -EBADMSG;
 }
 
-/* Skips over the (delta/length-encoded, RFC 7252 sec 3.1) Options in body to
- * find the payload, if any. This client never needs an option's own value
- * (mirroring pigeon_https.c not caring about response headers beyond
- * status), only where it ends. */
-static int pigeon_coap_tcp_find_payload(
-    uint8_t *body, size_t body_len, uint8_t **payload, size_t *payload_len
-) {
-  size_t off = 0;
-
-  while (off < body_len) {
-    uint8_t opt_hdr = body[off];
-
-    if (opt_hdr == 0xFF) {
-      *payload = body + off + 1;
-      *payload_len = body_len - off - 1;
-      return 0;
-    }
-
-    off++;
-
-    uint16_t delta = opt_hdr >> 4;
-    uint16_t len = opt_hdr & 0x0F;
-
-    if (delta == 13) {
-      if (off >= body_len) {
-        return -EBADMSG;
-      }
-      delta = 13 + body[off++];
-    } else if (delta == 14) {
-      if (off + 1 >= body_len) {
-        return -EBADMSG;
-      }
-      delta = 269 + sys_get_be16(&body[off]);
-      off += 2;
-    } else if (delta == 15) {
-      return -EBADMSG;
-    }
-    ARG_UNUSED(delta);
-
-    if (len == 13) {
-      if (off >= body_len) {
-        return -EBADMSG;
-      }
-      len = 13 + body[off++];
-    } else if (len == 14) {
-      if (off + 1 >= body_len) {
-        return -EBADMSG;
-      }
-      len = 269 + sys_get_be16(&body[off]);
-      off += 2;
-    } else if (len == 15) {
-      return -EBADMSG;
-    }
-
-    if (off + len > body_len) {
-      return -EBADMSG;
-    }
-    off += len;
-  }
-
-  *payload = NULL;
-  *payload_len = 0;
-
-  return 0;
-}
-
 int pigeon_coap_transport_exchange(
     uint8_t code, const char *leaf, const uint8_t *payload, size_t payload_len,
-    const struct pigeon_coap_req_opts *opts, uint8_t *rsp_code, const uint8_t **rsp_payload,
-    size_t *rsp_payload_len
+    const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
   int err = pigeon_coap_parse_endpoint();
 
@@ -500,9 +433,12 @@ int pigeon_coap_transport_exchange(
     return err;
   }
 
+  uint8_t rsp_code;
+
   pigeon_coap_tcp_body_len = 0;
   err = pigeon_coap_tcp_read_message(
-      sock, pigeon_coap_tcp_body, sizeof(pigeon_coap_tcp_body), &pigeon_coap_tcp_body_len, rsp_code
+      sock, pigeon_coap_tcp_body, sizeof(pigeon_coap_tcp_body), &pigeon_coap_tcp_body_len,
+      &rsp_code
   );
   zsock_close(sock);
 
@@ -510,18 +446,5 @@ int pigeon_coap_transport_exchange(
     return err;
   }
 
-  uint8_t *found;
-  size_t found_len;
-
-  err = pigeon_coap_tcp_find_payload(
-      pigeon_coap_tcp_body, pigeon_coap_tcp_body_len, &found, &found_len
-  );
-  if (err) {
-    return err;
-  }
-
-  *rsp_payload = found;
-  *rsp_payload_len = found_len;
-
-  return 0;
+  return pigeon_coap_read_body(rsp_code, pigeon_coap_tcp_body, pigeon_coap_tcp_body_len, rsp);
 }
