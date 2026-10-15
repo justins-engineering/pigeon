@@ -453,8 +453,9 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config);
  * with CONFIG_PIGEON_COAP_HTTPS_SHADOW.
  *
  * @param out Filled with the fetched shadow on success.
- * @return 0 on success; -EACCES when the platform answered 401 or 403 (the
- *         token was refused); -EIO on any other status but 200; -EMSGSIZE when
+ * @return 0 on success; -EACCES on a 401 (the platform refused the token) or
+ *         a 403 (the edge refused the request; the platform answers a refused
+ *         token 401); -EIO on any other status but 200; -EMSGSIZE when
  *         the body is larger than the largest document the config cap allows
  *         (refused, never decoded cut) or a config is over the cap, and
  *         -EBADMSG, as pigeon_shadow_get() gives them; another negative code
@@ -473,8 +474,8 @@ int pigeon_https_shadow_get(struct pigeon_shadow_doc *out);
  * @param current_version The target_version that was just applied.
  * @param current_config Raw JSON object string describing the applied config.
  * @return 0 on a 2xx; -EMSGSIZE as pigeon_shadow_report() gives it, before
- *         anything is sent; -EACCES on 401 or 403; -EIO on any other status;
- *         another negative code when the connection fails.
+ *         anything is sent; -EACCES on 401 or 403, as for the GET; -EIO on
+ *         any other status; another negative code when the connection fails.
  */
 int pigeon_https_shadow_report(int32_t current_version, const char *current_config);
 #endif /* CONFIG_PIGEON_COAP_HTTPS_SHADOW */

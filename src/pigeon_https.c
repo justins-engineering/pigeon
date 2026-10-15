@@ -1147,7 +1147,8 @@ static const struct pigeon_https_shadow_bufs pigeon_https_fallback_bufs = {
     .wire = &pigeon_coap_shadow_wire,
 };
 
-/* A refusal of the token reads as the CoAP connector's refusal of the PSK. */
+/* A refusal, of the token by the platform (401) or of the request by the edge (403), reads as the
+ * CoAP connector's refusal of the PSK. */
 static int pigeon_https_fallback_err(int err, uint16_t status) {
   return (err == -EIO && (status == 401 || status == 403)) ? -EACCES : err;
 }
