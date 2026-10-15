@@ -130,9 +130,8 @@ static bool pigeon_https_endpoint_parsed;
  * that is wanted from here. */
 static uint8_t pigeon_https_recv_buf[PIGEON_HTTPS_RECV_BUF_LEN];
 
-/* Body accumulated across (possibly multiple) http_response_cb_t calls. */
+/* A shadow GET's response body, or a shadow report's request body. */
 static char pigeon_https_body[PIGEON_HTTPS_RECV_BUF_LEN];
-static size_t pigeon_https_body_len;
 
 /* Decoded into here, so the pointers pigeon_shadow_get() hands out stay valid until the next
  * call, as pigeon.h documents. */
@@ -272,34 +271,62 @@ static int pigeon_https_connect(void) {
   return sock;
 }
 
-#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
-/* The connector proper: the three device-facing operations and the shadow
- * decode behind them. Compiled out when this file is built ONLY to carry the
- * FOTA download for another connector (see the endpoint note at the top),
- * where that connector defines these same hooks and the image fetch is all
- * that is wanted from here. */
-static int pigeon_https_response_cb(
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS) || defined(CONFIG_PIGEON_COAP_HTTPS_SHADOW)
+/* The shadow GET and report, shared by the HTTPS connector and a CoAP build's HTTPS shadow
+ * fallback, each with its own buffers. Every user of them holds the transport lock. */
+struct pigeon_https_shadow_bufs {
+  /* The HTTP parser's scratch. */
+  uint8_t *recv;
+  size_t recv_len;
+  /* A GET's response body, or a report's request body. */
+  char *body;
+  size_t body_len;
+  /* What a GET decodes into, and so what the configs it hands out point into. */
+  struct pigeon_shadow_wire *wire;
+};
+
+/* A response body accumulated across http_response_cb_t calls. */
+struct pigeon_https_body_ctx {
+  char *buf;
+  size_t cap;
+  size_t len;
+  /* The body outgrew buf, which then holds a prefix of it. */
+  bool cut;
+};
+
+/* Accumulates into the pigeon_https_body_ctx in user_data, or drops the body when that is NULL:
+ * no caller reads a POST's answer beyond its status. */
+static int pigeon_https_body_cb(
     struct http_response *rsp, enum http_final_call final_data, void *user_data
 ) {
   ARG_UNUSED(final_data);
-  ARG_UNUSED(user_data);
+  struct pigeon_https_body_ctx *body = user_data;
 
-  if (rsp->body_frag_start && rsp->body_frag_len) {
-    size_t copy_len = rsp->body_frag_len;
-
-    if (pigeon_https_body_len + copy_len >= sizeof(pigeon_https_body)) {
-      copy_len = sizeof(pigeon_https_body) - pigeon_https_body_len - 1;
-    }
-
-    memcpy(pigeon_https_body + pigeon_https_body_len, rsp->body_frag_start, copy_len);
-    pigeon_https_body_len += copy_len;
-    pigeon_https_body[pigeon_https_body_len] = '\0';
+  if (!body || !rsp->body_frag_start || !rsp->body_frag_len) {
+    return 0;
   }
+
+  size_t n = rsp->body_frag_len;
+
+  if (n >= body->cap - body->len) {
+    n = body->cap - body->len - 1;
+    body->cut = true;
+  }
+
+  memcpy(body->buf + body->len, rsp->body_frag_start, n);
+  body->len += n;
+  body->buf[body->len] = '\0';
 
   return 0;
 }
 
-static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
+/* GET <endpoint>/shadow into bufs. *status is the HTTP status, 0 when none was read; any but
+ * 200 is -EIO. */
+static int pigeon_https_shadow_get_with(
+    const struct pigeon_https_shadow_bufs *bufs, struct pigeon_shadow_doc *out, uint16_t *status
+) {
+  *status = 0;
+
   int err = pigeon_https_parse_endpoint();
 
   if (err) {
@@ -327,8 +354,9 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
   );
   const char *headers[] = {auth_header, NULL};
 
-  pigeon_https_body_len = 0;
-  pigeon_https_body[0] = '\0';
+  struct pigeon_https_body_ctx body = {.buf = bufs->body, .cap = bufs->body_len};
+
+  bufs->body[0] = '\0';
 
   struct http_request req = {
       .method = HTTP_GET,
@@ -336,12 +364,12 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
       .host = pigeon_https_host,
       .protocol = "HTTP/1.1",
       .header_fields = headers,
-      .response = pigeon_https_response_cb,
-      .recv_buf = pigeon_https_recv_buf,
-      .recv_buf_len = sizeof(pigeon_https_recv_buf),
+      .response = pigeon_https_body_cb,
+      .recv_buf = bufs->recv,
+      .recv_buf_len = bufs->recv_len,
   };
 
-  err = http_client_req(sock, &req, 10000, NULL);
+  err = http_client_req(sock, &req, 10000, &body);
   zsock_close(sock);
 
   if (err < 0) {
@@ -349,22 +377,126 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
     return err;
   }
 
-  if (req.internal.response.http_status_code != 200) {
-    LOG_ERR(
-        "Shadow GET returned HTTP %u %s", req.internal.response.http_status_code,
-        req.internal.response.http_status
-    );
+  *status = req.internal.response.http_status_code;
+
+  if (*status != 200) {
+    LOG_ERR("Shadow GET returned HTTP %u %s", *status, req.internal.response.http_status);
     return -EIO;
   }
 
-  if (pigeon_https_body_len == 0) {
+  /* A prefix is not the document the platform sent, and one cut in trailing whitespace would
+   * still decode. */
+  if (body.cut) {
+    LOG_ERR("Shadow GET body over %u bytes", (unsigned)(bufs->body_len - 1));
+    return -EMSGSIZE;
+  }
+
+  if (body.len == 0) {
     LOG_ERR("Shadow GET returned an empty body");
     return -ENODATA;
   }
 
-  return pigeon_shadow_wire_decode(
-      pigeon_https_body, pigeon_https_body_len, &pigeon_https_shadow, out
+  return pigeon_shadow_wire_decode(bufs->body, body.len, bufs->wire, out);
+}
+
+/* POST <endpoint>/shadow, the body built in bufs. *status as for the GET; any but 2xx is
+ * -EIO. */
+static int pigeon_https_shadow_report_with(
+    const struct pigeon_https_shadow_bufs *bufs, int32_t current_version,
+    const char *current_config, uint16_t *status
+) {
+  *status = 0;
+
+  /* Before the body below, which would otherwise cut an oversized config mid-JSON. */
+  int err = pigeon_shadow_report_fits(current_config);
+
+  if (err) {
+    return err;
+  }
+
+  /* current_config is embedded verbatim as a raw JSON object -- not a
+   * string value, so it must not be quote-escaped, only trusted to already be valid JSON
+   * (the caller's responsibility, see pigeon_shadow_doc's docs). */
+  int len = snprintk(
+      bufs->body, bufs->body_len, "{\"current_config\":%s,\"current_version\":%d}",
+      current_config, current_version
   );
+
+  if (len < 0 || (size_t)len >= bufs->body_len) {
+    return -EMSGSIZE;
+  }
+
+  err = pigeon_https_parse_endpoint();
+
+  if (err) {
+    return err;
+  }
+
+  int sock = pigeon_https_connect();
+
+  if (sock < 0) {
+    return sock;
+  }
+
+  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/shadow")];
+
+  snprintk(url, sizeof(url), "%s/shadow", pigeon_https_path);
+
+  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
+
+  snprintk(
+      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  );
+  const char *headers[] = {auth_header, NULL};
+
+  struct http_request req = {
+      .method = HTTP_POST,
+      .url = url,
+      .host = pigeon_https_host,
+      .protocol = "HTTP/1.1",
+      .header_fields = headers,
+      .content_type_value = "application/json",
+      .payload = bufs->body,
+      .payload_len = (size_t)len,
+      .response = pigeon_https_body_cb,
+      .recv_buf = bufs->recv,
+      .recv_buf_len = bufs->recv_len,
+  };
+
+  err = http_client_req(sock, &req, 10000, NULL);
+  zsock_close(sock);
+
+  if (err < 0) {
+    LOG_ERR("Shadow report POST request failed: %d", err);
+    return err;
+  }
+
+  *status = req.internal.response.http_status_code;
+
+  if (*status < 200 || *status >= 300) {
+    LOG_ERR(
+        "Shadow report POST returned HTTP %u %s", *status, req.internal.response.http_status
+    );
+    return -EIO;
+  }
+
+  return 0;
+}
+#endif /* CONFIG_PIGEON_CONNECTOR_HTTPS || CONFIG_PIGEON_COAP_HTTPS_SHADOW */
+
+#if defined(CONFIG_PIGEON_CONNECTOR_HTTPS)
+static const struct pigeon_https_shadow_bufs pigeon_https_connector_bufs = {
+    .recv = pigeon_https_recv_buf,
+    .recv_len = sizeof(pigeon_https_recv_buf),
+    .body = pigeon_https_body,
+    .body_len = sizeof(pigeon_https_body),
+    .wire = &pigeon_https_shadow,
+};
+
+static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
+  uint16_t status;
+
+  return pigeon_https_shadow_get_with(&pigeon_https_connector_bufs, out, &status);
 }
 
 #if defined(CONFIG_PIGEON_TOKEN_ROTATION)
@@ -614,8 +746,6 @@ static int pigeon_transport_report_telemetry_locked(
   );
   const char *headers[] = {auth_header, NULL};
 
-  pigeon_https_body_len = 0;
-  pigeon_https_body[0] = '\0';
   pigeon_https_retry_after.len = 0;
   pigeon_https_retry_after.capturing = false;
 
@@ -634,7 +764,7 @@ static int pigeon_transport_report_telemetry_locked(
       .content_type_value = "application/json",
       .payload = body,
       .payload_len = body_len,
-      .response = pigeon_https_response_cb,
+      .response = pigeon_https_body_cb,
       .recv_buf = pigeon_https_recv_buf,
       .recv_buf_len = sizeof(pigeon_https_recv_buf),
       .http_cb = &pigeon_https_header_cb,
@@ -733,9 +863,6 @@ static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) 
   );
   const char *headers[] = {auth_header, NULL};
 
-  pigeon_https_body_len = 0;
-  pigeon_https_body[0] = '\0';
-
   /* Raw dictionary-mode binary chunk, not JSON -- unlike the telemetry/shadow
    * POSTs above, the payload here is whatever pigeon_log_backend.c drained
    * from its ring buffer verbatim (source strings already stripped from the
@@ -749,7 +876,7 @@ static int pigeon_transport_upload_logs_locked(const uint8_t *data, size_t len) 
       .content_type_value = "application/octet-stream",
       .payload = (const char *)data,
       .payload_len = len,
-      .response = pigeon_https_response_cb,
+      .response = pigeon_https_body_cb,
       .recv_buf = pigeon_https_recv_buf,
       .recv_buf_len = sizeof(pigeon_https_recv_buf),
   };
@@ -793,82 +920,11 @@ int pigeon_transport_upload_logs(const uint8_t *data, size_t len) {
 }
 
 static int pigeon_shadow_report_locked(int32_t current_version, const char *current_config) {
-  /* Before the body below, which would otherwise cut an oversized config mid-JSON. */
-  int err = pigeon_shadow_report_fits(current_config);
+  uint16_t status;
 
-  if (err) {
-    return err;
-  }
-
-  err = pigeon_https_parse_endpoint();
-
-  if (err) {
-    return err;
-  }
-
-  int sock = pigeon_https_connect();
-
-  if (sock < 0) {
-    return sock;
-  }
-
-  char url[PIGEON_HTTPS_PATH_MAX + sizeof("/shadow")];
-
-  snprintk(url, sizeof(url), "%s/shadow", pigeon_https_path);
-
-  char auth_header[PIGEON_HTTPS_AUTH_HEADER_MAX];
-
-  snprintk(
-      auth_header, sizeof(auth_header), "Authorization: Bearer %s\r\n", pigeon_token_current()
+  return pigeon_https_shadow_report_with(
+      &pigeon_https_connector_bufs, current_version, current_config, &status
   );
-  const char *headers[] = {auth_header, NULL};
-
-  /* current_config is embedded verbatim as a raw JSON object -- not a
-   * string value, so it must not be quote-escaped, only trusted to already be valid JSON
-   * (the caller's responsibility, see pigeon_shadow_doc's docs). The margin
-   * covers the fixed JSON framing plus an 11-char int32 (49 bytes). */
-  char body[PIGEON_HTTPS_CONFIG_MAX + 64];
-
-  snprintk(
-      body, sizeof(body), "{\"current_config\":%s,\"current_version\":%d}", current_config,
-      current_version
-  );
-
-  pigeon_https_body_len = 0;
-  pigeon_https_body[0] = '\0';
-
-  struct http_request req = {
-      .method = HTTP_POST,
-      .url = url,
-      .host = pigeon_https_host,
-      .protocol = "HTTP/1.1",
-      .header_fields = headers,
-      .content_type_value = "application/json",
-      .payload = body,
-      .payload_len = strlen(body),
-      .response = pigeon_https_response_cb,
-      .recv_buf = pigeon_https_recv_buf,
-      .recv_buf_len = sizeof(pigeon_https_recv_buf),
-  };
-
-  err = http_client_req(sock, &req, 10000, NULL);
-  zsock_close(sock);
-
-  if (err < 0) {
-    LOG_ERR("Shadow report POST request failed: %d", err);
-    return err;
-  }
-
-  uint16_t status = req.internal.response.http_status_code;
-
-  if (status < 200 || status >= 300) {
-    LOG_ERR(
-        "Shadow report POST returned HTTP %u %s", status, req.internal.response.http_status
-    );
-    return -EIO;
-  }
-
-  return 0;
 }
 
 int pigeon_shadow_report(int32_t current_version, const char *current_config) {
@@ -894,10 +950,8 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 static uint8_t pigeon_https_fota_recv_buf[PIGEON_HTTPS_FOTA_RECV_BUF_LEN];
 
 /* Copies response body fragments straight into the caller's chunk buffer
- * (user_data), unlike pigeon_https_response_cb() above which accumulates
- * into the module-global pigeon_https_body -- that buffer is far too small
- * for a multi-KB firmware chunk, and reusing it here would race the
- * shadow/telemetry paths' use of the same static storage. */
+ * (user_data), unlike pigeon_https_body_cb() above, which keeps a byte for a
+ * NUL: a binary chunk fills its buffer exactly. */
 struct pigeon_https_fota_ctx {
   uint8_t *dst;
   size_t dst_len;

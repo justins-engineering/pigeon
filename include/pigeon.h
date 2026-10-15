@@ -394,6 +394,8 @@ int pigeon_shadow_flush(void);
  *         bytes or more, and -EBADMSG when the document lacks a field. A
  *         config whose escaped form is a quarter or more over that cap fails
  *         the parse itself, with the parser's -EINVAL, whatever its own length.
+ *         On HTTPS, -EMSGSIZE also means a body larger than the largest
+ *         document that cap allows, which is refused rather than decoded cut.
  */
 int pigeon_shadow_get(struct pigeon_shadow_doc *out);
 
