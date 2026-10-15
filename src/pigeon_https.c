@@ -299,7 +299,8 @@ struct pigeon_https_body_ctx {
 };
 
 /* Accumulates into the pigeon_https_body_ctx in user_data, or drops the body when that is NULL:
- * no caller reads a POST's answer beyond its status. */
+ * no caller reads a POST's answer beyond its status. Keeps no NUL, as the decode takes a length,
+ * so a body fills buf exactly as the CoAP GET's reassembly does. */
 static int pigeon_https_body_cb(
     struct http_response *rsp, enum http_final_call final_data, void *user_data
 ) {
@@ -312,14 +313,13 @@ static int pigeon_https_body_cb(
 
   size_t n = rsp->body_frag_len;
 
-  if (n >= body->cap - body->len) {
-    n = body->cap - body->len - 1;
+  if (n > body->cap - body->len) {
+    n = body->cap - body->len;
     body->cut = true;
   }
 
   memcpy(body->buf + body->len, rsp->body_frag_start, n);
   body->len += n;
-  body->buf[body->len] = '\0';
 
   return 0;
 }
@@ -360,8 +360,6 @@ static int pigeon_https_shadow_get_with(
 
   struct pigeon_https_body_ctx body = {.buf = bufs->body, .cap = bufs->body_len};
 
-  bufs->body[0] = '\0';
-
   struct http_request req = {
       .method = HTTP_GET,
       .url = url,
@@ -391,7 +389,7 @@ static int pigeon_https_shadow_get_with(
   /* A prefix is not the document the platform sent, and one cut in trailing whitespace would
    * still decode. */
   if (body.cut) {
-    LOG_ERR("Shadow GET body over %u bytes", (unsigned)(bufs->body_len - 1));
+    LOG_ERR("Shadow GET body over %u bytes", (unsigned)bufs->body_len);
     return -EMSGSIZE;
   }
 
@@ -954,8 +952,7 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config) {
 static uint8_t pigeon_https_fota_recv_buf[PIGEON_HTTPS_FOTA_RECV_BUF_LEN];
 
 /* Copies response body fragments straight into the caller's chunk buffer
- * (user_data), unlike pigeon_https_body_cb() above, which keeps a byte for a
- * NUL: a binary chunk fills its buffer exactly. */
+ * (user_data), which a binary chunk fills exactly. */
 struct pigeon_https_fota_ctx {
   uint8_t *dst;
   size_t dst_len;

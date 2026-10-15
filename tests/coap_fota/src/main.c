@@ -502,6 +502,21 @@ ZTEST(coap_fota, test_https_shadow_over_the_buffer_is_refused_not_cut) {
   zassert_equal(pigeon_https_shadow_get(&doc), -EMSGSIZE);
 }
 
+/* A body that fills the buffer exactly is the whole document, which the CoAP GET decodes too. */
+ZTEST(coap_fota, test_https_shadow_filling_the_buffer_decodes) {
+  static char padded[PIGEON_SHADOW_DOC_MAX + 1];
+  struct pigeon_shadow_doc doc;
+
+  memset(padded, ' ', sizeof(padded) - 1);
+  memcpy(padded, shadow_json, sizeof(shadow_json) - 1);
+  padded[sizeof(padded) - 1] = '\0';
+
+  serve_shadow_json(200, padded);
+  zassert_ok(pigeon_https_shadow_get(&doc));
+  zassert_equal(doc.target_version, 7);
+  zassert_str_equal(doc.target_config, "{\"log\":\"inf\",\"telemetry_interval\":900}");
+}
+
 static int get_answered(int status) {
   struct pigeon_shadow_doc doc;
 
