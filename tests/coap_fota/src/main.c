@@ -448,9 +448,9 @@ static void serve_shadow_json(int status, const char *body) {
   reset_seen(-1);
 }
 
-/* The fallback GET presents the token, decodes the body exactly as the CoAP GET's decode does,
- * and hands out configs from the CoAP GET's own buffer, so pigeon_shadow_get()'s contract holds
- * whichever path read the shadow. */
+/* The fallback GET presents the token, decodes with the CoAP GET's decode and hands out configs
+ * from the CoAP GET's own wire struct. The CoAP GET itself is not driven here, so a body only its
+ * reassembly would treat differently goes unseen. */
 ZTEST(coap_fota, test_https_shadow_decodes_as_the_coap_get_does) {
   struct pigeon_shadow_doc doc;
 
