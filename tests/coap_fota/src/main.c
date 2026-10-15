@@ -45,9 +45,11 @@ static atomic_t serve_left;
 static atomic_t server_stop;
 static int listener = -1;
 
-/* What /shadow answers: shadow_status, and with a 200 the body shadow_body. */
+/* What /shadow answers: shadow_status, and with a 200 the body shadow_body, sent in two writes
+ * a pause apart when shadow_split is set. */
 static atomic_t shadow_status;
 static const char *shadow_body;
+static atomic_t shadow_split;
 
 static void reset_seen(atomic_val_t limit) {
   k_mutex_lock(&seen.lock, K_FOREVER);
@@ -118,8 +120,17 @@ static void serve_shadow(
       status, strlen(payload)
   );
 
-  if (send_all(sock, head, (size_t)head_len) == 0) {
-    (void)send_all(sock, payload, strlen(payload));
+  if (send_all(sock, head, (size_t)head_len) != 0) {
+    return;
+  }
+
+  size_t len = strlen(payload);
+  size_t first = atomic_get(&shadow_split) ? len / 2 : len;
+
+  /* Each write is its own TLS record, and the pause lets the client read the first alone. */
+  if (send_all(sock, payload, first) == 0 && first < len) {
+    k_msleep(50);
+    (void)send_all(sock, payload + first, len - first);
   }
 }
 
@@ -432,6 +443,7 @@ static const char shadow_json[] =
 static void serve_shadow_json(int status, const char *body) {
   k_msleep(2 * CONFIG_NET_TCP_TIME_WAIT_DELAY);
   atomic_set(&shadow_status, status);
+  atomic_set(&shadow_split, 0);
   shadow_body = body;
   reset_seen(-1);
 }
@@ -481,6 +493,19 @@ ZTEST(coap_fota, test_https_shadow_report_sends_the_body_with_the_token) {
   zassert_str_equal(seen.auth, "Bearer " CONFIG_PIGEON_TOKEN);
   zassert_str_equal(seen.body, "{\"current_config\":{\"log\":\"inf\"},\"current_version\":7}");
   k_mutex_unlock(&seen.lock);
+}
+
+/* A body that arrives in two reads is decoded whole, not as its last fragment. */
+ZTEST(coap_fota, test_https_shadow_in_two_reads_decodes_whole) {
+  struct pigeon_shadow_doc doc;
+
+  serve_shadow_json(200, shadow_json);
+  atomic_set(&shadow_split, 1);
+  zassert_ok(pigeon_https_shadow_get(&doc));
+  zassert_equal(doc.target_version, 7);
+  zassert_equal(doc.updated_at, 1786639870);
+  zassert_str_equal(doc.target_config, "{\"log\":\"inf\",\"telemetry_interval\":900}");
+  zassert_str_equal(doc.current_config, "{\"log\":\"wrn\"}");
 }
 
 /* A body past the buffer is refused, even one whose cut prefix would decode. */
