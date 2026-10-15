@@ -13,6 +13,10 @@
 #include "pigeon_shadow_wire.h"
 #include "pigeon_token.h"
 
+#if defined(CONFIG_PIGEON_COAP_HTTPS_SHADOW)
+#include "pigeon_coap_internal.h"
+#endif
+
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
 #define PIGEON_HTTPS_HOST_MAX 128
@@ -1131,5 +1135,56 @@ int pigeon_transport_download_firmware(
 
   return err;
 }
+
+#if defined(CONFIG_PIGEON_COAP_HTTPS_SHADOW)
+/* Buffers whose every user holds the transport lock: the image fetch's parser buffer, and the
+ * CoAP GET's reassembly buffer and decode target. */
+static const struct pigeon_https_shadow_bufs pigeon_https_fallback_bufs = {
+    .recv = pigeon_https_fota_recv_buf,
+    .recv_len = sizeof(pigeon_https_fota_recv_buf),
+    .body = (char *)pigeon_coap_shadow_blocks,
+    .body_len = sizeof(pigeon_coap_shadow_blocks),
+    .wire = &pigeon_coap_shadow_wire,
+};
+
+/* A refusal of the token reads as the CoAP connector's refusal of the PSK. */
+static int pigeon_https_fallback_err(int err, uint16_t status) {
+  return (err == -EIO && (status == 401 || status == 403)) ? -EACCES : err;
+}
+
+int pigeon_https_shadow_get(struct pigeon_shadow_doc *out) {
+  if (!out) {
+    return -EINVAL;
+  }
+
+  uint16_t status;
+
+  (void)pigeon_transport_lock(K_FOREVER);
+
+  int err = pigeon_https_shadow_get_with(&pigeon_https_fallback_bufs, out, &status);
+
+  pigeon_transport_unlock();
+
+  return pigeon_https_fallback_err(err, status);
+}
+
+int pigeon_https_shadow_report(int32_t current_version, const char *current_config) {
+  if (!current_config) {
+    return -EINVAL;
+  }
+
+  uint16_t status;
+
+  (void)pigeon_transport_lock(K_FOREVER);
+
+  int err = pigeon_https_shadow_report_with(
+      &pigeon_https_fallback_bufs, current_version, current_config, &status
+  );
+
+  pigeon_transport_unlock();
+
+  return pigeon_https_fallback_err(err, status);
+}
+#endif /* CONFIG_PIGEON_COAP_HTTPS_SHADOW */
 
 #endif /* CONFIG_PIGEON_FOTA */

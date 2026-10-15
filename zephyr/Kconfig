@@ -813,6 +813,26 @@ config PIGEON_FOTA_HTTPS_ENDPOINT
     the image fetch is an ordinary device-authenticated HTTPS request
     whatever the connector itself uses.
 
+    A CoAP build with CONFIG_PIGEON_COAP_HTTPS_SHADOW reads and acks its
+    shadow here too when the application falls back to HTTPS.
+
+config PIGEON_COAP_HTTPS_SHADOW
+  bool "HTTPS shadow fallback for a CoAP build"
+  depends on PIGEON_CONNECTOR_COAP
+  default n
+  help
+    Adds pigeon_https_shadow_get() and pigeon_https_shadow_report(): the
+    shadow GET and report over HTTPS, to CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT
+    with CONFIG_PIGEON_TOKEN, for a device whose CoAP path is down. The
+    shadow is what carries a config change, a reboot and a firmware
+    target, so without it such a device can change image only at a visit.
+
+    When to fall back is the application's decision: the library keeps no
+    state, timer or mode for it, and telemetry and logs stay on CoAP. The
+    two calls borrow the image fetch's parser buffer and the CoAP shadow
+    GET's reassembly buffer and decode target, all used only under the
+    transport lock, so they add no static RAM.
+
 config PIGEON_FOTA_NCS
   bool "Use the nRF Connect SDK dfu_target backend instead of upstream flash_img"
   default n

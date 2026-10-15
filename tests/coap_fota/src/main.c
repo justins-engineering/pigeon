@@ -10,6 +10,9 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/ztest.h>
 
+#include "pigeon_coap_internal.h"
+#include "pigeon_shadow_wire.h"
+
 /* Made up. The firmware host here is TLS-PSK so the suite needs no certificate; the CoAP
  * connector's own PSK sits at another tag, as it must on a device. */
 #define TEST_PSK_IDENTITY "pigeon-coap-fota-test"
@@ -24,13 +27,17 @@
 static uint8_t image[IMAGE_SIZE];
 static char image_sha256[PIGEON_FOTA_SHA256_HEX_LEN + 1];
 
-/* What the firmware host was asked since the last reset_seen(). */
+/* What the host was asked since the last reset_seen(): firmware chunks, and apart from them
+ * the shadow requests with the last one's method and body. */
 static struct {
   struct k_mutex lock;
   int requests;
   long starts[MAX_SEEN];
   char path[96];
   char auth[96];
+  int shadow_requests;
+  char method[8];
+  char body[512];
 } seen;
 
 /* How many more chunks the host serves before it answers 503; negative for no limit. */
@@ -38,11 +45,18 @@ static atomic_t serve_left;
 static atomic_t server_stop;
 static int listener = -1;
 
+/* What /shadow answers: shadow_status, and with a 200 the body shadow_body. */
+static atomic_t shadow_status;
+static const char *shadow_body;
+
 static void reset_seen(atomic_val_t limit) {
   k_mutex_lock(&seen.lock, K_FOREVER);
   seen.requests = 0;
   seen.path[0] = '\0';
   seen.auth[0] = '\0';
+  seen.shadow_requests = 0;
+  seen.method[0] = '\0';
+  seen.body[0] = '\0';
   k_mutex_unlock(&seen.lock);
   atomic_set(&serve_left, limit);
 }
@@ -84,12 +98,38 @@ static void header_value(const char *req, const char *name, char *out, size_t ou
   out[len] = '\0';
 }
 
-/* One request per connection, as the client closes after each chunk. */
-static void serve(int sock) {
-  char req[1024];
-  size_t got = 0;
+/* The shadow route: records the request, then answers shadow_status. */
+static void serve_shadow(
+    int sock, const char *method, const char *path, const char *auth, const char *body
+) {
+  k_mutex_lock(&seen.lock, K_FOREVER);
+  seen.shadow_requests++;
+  strcpy(seen.method, method);
+  strcpy(seen.path, path);
+  strcpy(seen.auth, auth);
+  strncpy(seen.body, body, sizeof(seen.body) - 1);
+  k_mutex_unlock(&seen.lock);
 
-  while (got < sizeof(req) - 1) {
+  int status = (int)atomic_get(&shadow_status);
+  const char *payload = status == 200 ? shadow_body : "";
+  char head[128];
+  int head_len = snprintf(
+      head, sizeof(head), "HTTP/1.1 %d Test\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+      status, strlen(payload)
+  );
+
+  if (send_all(sock, head, (size_t)head_len) == 0) {
+    (void)send_all(sock, payload, strlen(payload));
+  }
+}
+
+/* One request per connection, as the client closes after each one. */
+static void serve(int sock) {
+  static char req[2048];
+  size_t got = 0;
+  char *head_end = NULL;
+
+  while (!head_end && got < sizeof(req) - 1) {
     ssize_t n = zsock_recv(sock, req + got, sizeof(req) - 1 - got, 0);
 
     if (n <= 0) {
@@ -97,17 +137,23 @@ static void serve(int sock) {
     }
     got += (size_t)n;
     req[got] = '\0';
-    if (strstr(req, "\r\n\r\n")) {
-      break;
-    }
+    head_end = strstr(req, "\r\n\r\n");
+  }
+  if (!head_end) {
+    return;
   }
 
+  char method[8] = "";
   char path[96] = "";
   char auth[96];
   char range[48];
+  char length[16];
   const char *sp = strchr(req, ' ');
 
-  if (sp) {
+  if (sp && (size_t)(sp - req) < sizeof(method)) {
+    memcpy(method, req, (size_t)(sp - req));
+    method[sp - req] = '\0';
+
     const char *sp2 = strchr(sp + 1, ' ');
     size_t len = sp2 ? (size_t)(sp2 - sp - 1) : 0;
 
@@ -118,6 +164,29 @@ static void serve(int sock) {
   }
   header_value(req, "Authorization: ", auth, sizeof(auth));
   header_value(req, "Range: bytes=", range, sizeof(range));
+  header_value(req, "Content-Length: ", length, sizeof(length));
+
+  /* The body may follow the headers in later reads. */
+  char *body = head_end + 4;
+  size_t want = (size_t)(body - req) + strtoul(length, NULL, 10);
+
+  while (got < want && got < sizeof(req) - 1) {
+    ssize_t n = zsock_recv(sock, req + got, sizeof(req) - 1 - got, 0);
+
+    if (n <= 0) {
+      return;
+    }
+    got += (size_t)n;
+    req[got] = '\0';
+  }
+
+  size_t path_len = strlen(path);
+
+  if (path_len >= sizeof("/shadow") - 1 &&
+      strcmp(path + path_len - (sizeof("/shadow") - 1), "/shadow") == 0) {
+    serve_shadow(sock, method, path, auth, body);
+    return;
+  }
 
   char *dash;
   long start = strtol(range, &dash, 10);
@@ -350,4 +419,126 @@ ZTEST(coap_fota, test_budget_charges_fresh_and_stalled_attempts) {
   zassert_true(pigeon_fota_apply(&info) < 0);
   zassert_false(pigeon_fota_attempt_allowed(&info, 7), "a stalled continuation spends one");
   zassert_true(pigeon_fota_attempt_allowed(&info, 8), "a new shadow write reopens it");
+}
+
+/* A shadow as dovecote sends it: both configs JSON text inside JSON strings, so escaped. */
+static const char shadow_json[] =
+    "{\"target_version\":7,\"current_version\":6,"
+    "\"target_config\":\"{\\\"log\\\":\\\"inf\\\",\\\"telemetry_interval\\\":900}\","
+    "\"current_config\":\"{\\\"log\\\":\\\"wrn\\\"}\",\"updated_at\":1786639870}";
+
+/* Also waits out the TIME_WAIT the last request's connection left (prj.conf), which a run of
+ * quick requests would otherwise exhaust the contexts with. */
+static void serve_shadow_json(int status, const char *body) {
+  k_msleep(2 * CONFIG_NET_TCP_TIME_WAIT_DELAY);
+  atomic_set(&shadow_status, status);
+  shadow_body = body;
+  reset_seen(-1);
+}
+
+/* The fallback GET presents the token, decodes the body exactly as the CoAP GET's decode does,
+ * and hands out configs from the CoAP GET's own buffer, so pigeon_shadow_get()'s contract holds
+ * whichever path read the shadow. */
+ZTEST(coap_fota, test_https_shadow_decodes_as_the_coap_get_does) {
+  struct pigeon_shadow_doc doc;
+
+  serve_shadow_json(200, shadow_json);
+  zassert_ok(pigeon_https_shadow_get(&doc));
+
+  k_mutex_lock(&seen.lock, K_FOREVER);
+  zassert_equal(seen.shadow_requests, 1);
+  zassert_str_equal(seen.method, "GET");
+  zassert_str_equal(seen.path, "/device/pigeons/test/shadow");
+  zassert_str_equal(seen.auth, "Bearer " CONFIG_PIGEON_TOKEN);
+  k_mutex_unlock(&seen.lock);
+
+  static char copy[sizeof(shadow_json)];
+  static struct pigeon_shadow_wire wire;
+  struct pigeon_shadow_doc coap;
+
+  memcpy(copy, shadow_json, sizeof(copy));
+  zassert_ok(pigeon_shadow_wire_decode(copy, sizeof(copy) - 1, &wire, &coap));
+
+  zassert_equal(doc.target_version, coap.target_version);
+  zassert_equal(doc.current_version, coap.current_version);
+  zassert_str_equal(doc.target_config, coap.target_config);
+  zassert_str_equal(doc.current_config, coap.current_config);
+  zassert_equal(doc.updated_at, coap.updated_at);
+  zassert_str_equal(doc.target_config, "{\"log\":\"inf\",\"telemetry_interval\":900}");
+  zassert_equal_ptr(doc.target_config, pigeon_coap_shadow_wire.target_config);
+  zassert_equal_ptr(doc.current_config, pigeon_coap_shadow_wire.current_config);
+}
+
+/* The ack is the HTTPS connector's report, with the token. */
+ZTEST(coap_fota, test_https_shadow_report_sends_the_body_with_the_token) {
+  serve_shadow_json(200, shadow_json);
+  zassert_ok(pigeon_https_shadow_report(7, "{\"log\":\"inf\"}"));
+
+  k_mutex_lock(&seen.lock, K_FOREVER);
+  zassert_equal(seen.shadow_requests, 1);
+  zassert_str_equal(seen.method, "POST");
+  zassert_str_equal(seen.path, "/device/pigeons/test/shadow");
+  zassert_str_equal(seen.auth, "Bearer " CONFIG_PIGEON_TOKEN);
+  zassert_str_equal(seen.body, "{\"current_config\":{\"log\":\"inf\"},\"current_version\":7}");
+  k_mutex_unlock(&seen.lock);
+}
+
+/* A body past the buffer is refused, even one whose cut prefix would decode. */
+ZTEST(coap_fota, test_https_shadow_over_the_buffer_is_refused_not_cut) {
+  static char padded[PIGEON_SHADOW_DOC_MAX + 64];
+  struct pigeon_shadow_doc doc;
+
+  memset(padded, ' ', sizeof(padded) - 1);
+  memcpy(padded, shadow_json, sizeof(shadow_json) - 1);
+  padded[sizeof(padded) - 1] = '\0';
+
+  static char cut[PIGEON_SHADOW_DOC_MAX];
+  static struct pigeon_shadow_wire wire;
+
+  memcpy(cut, padded, sizeof(cut) - 1);
+  zassert_ok(pigeon_shadow_wire_decode(cut, sizeof(cut) - 1, &wire, &doc), "the prefix decodes");
+
+  serve_shadow_json(200, padded);
+  zassert_equal(pigeon_https_shadow_get(&doc), -EMSGSIZE);
+}
+
+static int get_answered(int status) {
+  struct pigeon_shadow_doc doc;
+
+  serve_shadow_json(status, NULL);
+
+  return pigeon_https_shadow_get(&doc);
+}
+
+static int report_answered(int status) {
+  serve_shadow_json(status, NULL);
+
+  return pigeon_https_shadow_report(7, "{}");
+}
+
+/* A refused token reads as the CoAP connector's refusal; any other status is -EIO. */
+ZTEST(coap_fota, test_https_shadow_refusals_map_to_eacces) {
+  zassert_equal(get_answered(401), -EACCES);
+  zassert_equal(report_answered(401), -EACCES);
+  zassert_equal(get_answered(403), -EACCES);
+  zassert_equal(report_answered(403), -EACCES);
+  zassert_equal(get_answered(500), -EIO);
+  zassert_equal(report_answered(500), -EIO);
+}
+
+/* A report no later GET could decode is refused before it is sent. */
+ZTEST(coap_fota, test_https_shadow_report_over_the_cap_sends_nothing) {
+  static char config[CONFIG_PIGEON_SHADOW_CONFIG_MAX + 8];
+
+  memset(config, 'a', sizeof(config) - 1);
+  memcpy(config, "{\"k\":\"", 6);
+  memcpy(config + sizeof(config) - 3, "\"}", 2);
+  config[sizeof(config) - 1] = '\0';
+
+  serve_shadow_json(200, shadow_json);
+  zassert_equal(pigeon_https_shadow_report(7, config), -EMSGSIZE);
+
+  k_mutex_lock(&seen.lock, K_FOREVER);
+  zassert_equal(seen.shadow_requests, 0);
+  k_mutex_unlock(&seen.lock);
 }

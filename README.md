@@ -199,6 +199,15 @@ firmware update path on top of the shadow sync above: `pigeon.h` declares
   image replaces the running one outright and no previous slot survives to
   return to. Confirming still runs there; what it cannot do is make a bad
   image recoverable without another update.
+- `pigeon_https_shadow_get(out)` / `pigeon_https_shadow_report(version,
+  config)` — with `CONFIG_PIGEON_COAP_HTTPS_SHADOW` on a CoAP build with
+  FOTA: the shadow GET and report over HTTPS, to
+  `CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT` with `CONFIG_PIGEON_TOKEN`, so a
+  device whose CoAP path is down still receives a config change, a reboot
+  or a firmware target. The same document, decode and buffers as
+  `pigeon_shadow_get()`, no static RAM of their own; a 401 or 403 is
+  `-EACCES`. When to fall back is the application's decision, and
+  telemetry and logs stay on CoAP.
 
 ### Surviving a download that goes wrong
 

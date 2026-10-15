@@ -47,12 +47,12 @@ static bool pigeon_coap_psk_registered;
 
 /* Decoded into here, so the pointers pigeon_shadow_get() hands out stay valid until the next
  * call, as pigeon.h documents. */
-static struct pigeon_shadow_wire pigeon_coap_shadow_wire;
+struct pigeon_shadow_wire pigeon_coap_shadow_wire;
 
 /* A block-wise shadow response, reassembled. No larger than the largest document the config cap
  * allows, so a terminator cannot make the device hold more. Dead once the GET has decoded it into
  * pigeon_coap_shadow_wire, so the shadow report builds its body here, under the same lock. */
-static uint8_t pigeon_coap_shadow_blocks[PIGEON_SHADOW_DOC_MAX];
+uint8_t pigeon_coap_shadow_blocks[PIGEON_SHADOW_DOC_MAX];
 
 BUILD_ASSERT(PIGEON_SHADOW_DOC_MAX >= PIGEON_COAP_REPORT_BODY_MAX);
 

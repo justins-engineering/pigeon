@@ -131,6 +131,12 @@ int pigeon_coap_read_body(
 /* pigeon_coap_read_body() over a packet coap_packet_parse() accepted. */
 int pigeon_coap_read_packet(const struct coap_packet *pkt, struct pigeon_coap_rsp *rsp);
 
+/* The shadow GET's decode target and Block2 reassembly buffer (pigeon_coap.c), which the HTTPS
+ * shadow fallback in pigeon_https.c borrows under the same transport lock, so that both GETs hand
+ * out configs from one place. */
+extern struct pigeon_shadow_wire pigeon_coap_shadow_wire;
+extern uint8_t pigeon_coap_shadow_blocks[PIGEON_SHADOW_DOC_MAX];
+
 /* Parsed once (lazily) from CONFIG_PIGEON_ENDPOINT by
  * pigeon_coap_parse_endpoint() below. */
 extern char pigeon_coap_host[PIGEON_COAP_HOST_MAX];
