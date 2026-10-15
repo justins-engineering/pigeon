@@ -559,10 +559,11 @@ static int pigeon_shadow_get_locked(struct pigeon_shadow_doc *out) {
     opts.block2 = (num << 4) | szx;
   }
 
-  /* Without an ETag, as loft sends a JSON body, a document that changed length between blocks
-   * shows only here, and one that kept its length not at all. capsules::PigeonShadow puts both
-   * versions ahead of both configs, so they come from block 0: a torn config arrives under the
-   * older target_version, which the next poll reads as unapplied and fetches again. */
+  /* loft tags every block with an ETag of the whole document, so the ETag check above catches a
+   * change between blocks. From a server that sends none, a change of length shows only here and
+   * one that kept its length not at all; capsules::PigeonShadow puts both versions ahead of both
+   * configs, so a torn config arrives under the older target_version, which the next poll reads
+   * as unapplied and fetches again. */
   if (has_size2 && len != size2) {
     LOG_WRN("Shadow changed between blocks (%u of %u bytes)", (unsigned)len, size2);
     return -EAGAIN;

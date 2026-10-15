@@ -19,7 +19,7 @@ static struct {
   size_t len;
   /* LOFT_UDP_MAX_BLOCK_BYTES as a block-size exponent. */
   uint32_t max_szx;
-  /* An ETag on every block when etag_len is not 0, as loft sends on a firmware image. */
+  /* An ETag on every block when etag_len is not 0, as loft sends; 0 is a server without one. */
   uint8_t etag[PIGEON_COAP_ETAG_MAX];
   uint8_t etag_len;
   /* Applied to each response after it is built; a non-zero return is the exchange's error. */
@@ -34,7 +34,7 @@ static struct {
 
 /* loft's json_response (~/loft loft/src/handler.rs) for a 2.05 on UDP: a requested Block2 is
  * served at no more than the ceiling, the offset kept; no request option and a body over the
- * ceiling gets block 0 anyway; Size2 rides block 0 only; no ETag on a JSON body. */
+ * ceiling gets block 0 anyway; Size2 rides block 0 only; server.etag on every block. */
 static void loft_json_response(
     const struct pigeon_coap_req_opts *opts, struct pigeon_coap_rsp *rsp
 ) {
@@ -344,7 +344,7 @@ ZTEST(coap_block2, test_a_block_larger_than_asked_fails) {
   zassert_equal(pigeon_shadow_get(&out), -EBADMSG);
 }
 
-/* An ETag on every block, as loft sends with a firmware image, that stays put. */
+/* An ETag on every block, as loft sends, that stays put. */
 ZTEST(coap_block2, test_a_steady_etag_is_accepted) {
   static const uint8_t tag[8] = {1, 2, 3, 4, 5, 6, 7, 8};
   struct pigeon_shadow_doc out;
@@ -387,9 +387,10 @@ ZTEST(coap_block2, test_a_changed_etag_fails) {
   zassert_equal(seen.calls, 2);
 }
 
-/* loft fetches the shadow again for every block and sends no ETag on it, so a dashboard write
- * between two blocks reaches the device as blocks of two documents. A new length is caught by
- * Size2 against what arrived; a document that shrank past the block asked for is loft's 4.00. */
+/* loft fetches the shadow again for every block, so a dashboard write between two blocks reaches
+ * the device as blocks of two documents; its ETag catches that (test_a_changed_etag_fails). These
+ * cases serve no ETag: a new length is caught by Size2 against what arrived, and a document that
+ * shrank past the block asked for is loft's 4.00. */
 static char edited[PIGEON_SHADOW_DOC_MAX];
 static char edited_config[sizeof(board_config)];
 
