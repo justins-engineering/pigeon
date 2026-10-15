@@ -385,8 +385,10 @@ int pigeon_shadow_flush(void);
  * that ignores Block2 still works while the shadow fits one block).
  *
  * target_config/current_config point into a static buffer owned by the
- * connector compiled in: valid only until the next call. On NIDD,
- * current_config is valid only until the next pigeon_shadow_report().
+ * connector compiled in: valid only until the next call, and on CoAP until
+ * the next pigeon_https_shadow_get(), which rewrites that buffer even when it
+ * fails. On NIDD, current_config is valid only until the next
+ * pigeon_shadow_report().
  *
  * @param out Filled with the fetched shadow on success.
  * @return 0 on success, negative error code on transport/parse failure:
@@ -445,10 +447,10 @@ int pigeon_shadow_report(int32_t current_version, const char *current_config);
  * Issues GET <CONFIG_PIGEON_FOTA_HTTPS_ENDPOINT>/shadow with the bearer
  * CONFIG_PIGEON_TOKEN and fills out as pigeon_shadow_get() does: the same
  * document and decode, with the configs in the same static buffer, valid until
- * the next shadow GET on either path. Waits for the transport lock as
- * pigeon_shadow_get() does. When to call this instead is the application's
- * decision; the library keeps no state for it. Only declared with
- * CONFIG_PIGEON_COAP_HTTPS_SHADOW.
+ * the next shadow GET on either path, failed or not. Waits for the transport
+ * lock as pigeon_shadow_get() does. When to call this instead is the
+ * application's decision; the library keeps no state for it. Only declared
+ * with CONFIG_PIGEON_COAP_HTTPS_SHADOW.
  *
  * @param out Filled with the fetched shadow on success.
  * @return 0 on success; -EACCES when the platform answered 401 or 403 (the
