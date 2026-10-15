@@ -13,9 +13,9 @@
 
 LOG_MODULE_DECLARE(pigeon, CONFIG_PIGEON_LOG_LEVEL);
 
-/* The transport determines the endpoint scheme: RFC 8323 TLS/TCP endpoints
- * are coaps+tcp://, RFC 7252 DTLS/UDP endpoints are coaps://. Both default
- * to port 5684 (RFC 8323 sec 8.4 gives coaps+tcp the same default as
+/* The transport determines the endpoint scheme: RFC 7252 DTLS/UDP endpoints, the default
+ * transport and what the platform mints, are coaps://; RFC 8323 TLS/TCP endpoints are
+ * coaps+tcp://. Both default to port 5684 (RFC 8323 sec 8.4 gives coaps+tcp the same default as
  * coaps). */
 #if defined(CONFIG_PIGEON_COAP_TRANSPORT_UDP)
 #define PIGEON_COAP_SCHEME "coaps"

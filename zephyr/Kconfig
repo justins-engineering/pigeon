@@ -111,7 +111,7 @@ if PIGEON_CONNECTOR_COAP
 
 choice PIGEON_COAP_TRANSPORT
   prompt "CoAP transport"
-  default PIGEON_COAP_TRANSPORT_TCP
+  default PIGEON_COAP_TRANSPORT_UDP
 
 config PIGEON_COAP_TRANSPORT_TCP
   bool "CoAP over TLS/TCP (RFC 8323, coaps+tcp://)"
@@ -125,10 +125,12 @@ config PIGEON_COAP_TRANSPORT_TCP
 config PIGEON_COAP_TRANSPORT_UDP
   bool "CoAP over DTLS/UDP (RFC 7252, coaps://)"
   help
-    The primary transport for constrained battery/cellular devices: a
-    single long-lived DTLS session (PSK, TLS_PSK_WITH_AES_128_CCM_8
-    target) carrying proper RFC 7252 confirmable exchanges -- CON/ACK,
-    exponential-backoff retransmission, and duplicate detection, governed
+    The default, because the platform mints coaps:// endpoints and the
+    scheme must match the build's transport. The primary transport for
+    constrained battery/cellular devices: a single long-lived DTLS
+    session (PSK, TLS_PSK_WITH_AES_128_CCM_8 target) carrying proper
+    RFC 7252 confirmable exchanges -- CON/ACK, exponential-backoff
+    retransmission, and duplicate detection, governed
     by Zephyr's own CoAP transmission Kconfigs
     (CONFIG_COAP_INIT_ACK_TIMEOUT_MS, CONFIG_COAP_ACK_RANDOM_PERCENT,
     CONFIG_COAP_BACKOFF_PERCENT, CONFIG_COAP_MAX_RETRANSMIT -- RFC 7252
